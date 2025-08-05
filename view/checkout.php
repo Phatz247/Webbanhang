@@ -31,16 +31,39 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_SESSION['pending_order'])) {
     unset($_SESSION['pending_order']);
 }
 
-// Kiểm tra có sản phẩm được chọn không
-if ($_SERVER['REQUEST_METHOD'] !== 'POST' || empty($_POST['selected_items'])) {
+// Khôi phục checkout state từ profile (nếu có)
+$restored_from_profile = false;
+if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_SESSION['restore_checkout'])) {
+    $restore_data = $_SESSION['restore_checkout'];
+    // Chỉ khôi phục form data, không khôi phục selected_items để tránh duplicate
+    $_POST['payment_method'] = $restore_data['payment_method'];
+    $_POST['notes'] = $restore_data['notes'];
+    if (!empty($restore_data['voucher_code'])) {
+        $_POST['voucher_code'] = $restore_data['voucher_code'];
+        $_POST['apply_voucher'] = true; // Trigger voucher application
+    }
+    unset($_SESSION['restore_checkout']);
+    $restored_from_profile = true;
+    // Set REQUEST_METHOD để xử lý voucher
+    $_SERVER['REQUEST_METHOD'] = 'POST';
+}
+
+// Kiểm tra có sản phẩm được chọn không (trừ khi quay lại từ profile)
+if (!$restored_from_profile && (($_SERVER['REQUEST_METHOD'] !== 'POST') || empty($_POST['selected_items']))) {
     header('Location: shoppingcart.php');
     exit;
 }
 
-$selected_keys = (array)$_POST['selected_items'];
-if (empty($selected_keys)) {
-    header('Location: shoppingcart.php');
-    exit;
+// Nếu không phải từ profile thì cần selected_items
+if (!$restored_from_profile) {
+    $selected_keys = (array)$_POST['selected_items'];
+    if (empty($selected_keys)) {
+        header('Location: shoppingcart.php');
+        exit;
+    }
+} else {
+    // Nếu từ profile, lấy tất cả items từ cart
+    $selected_keys = array_keys($_SESSION['cart']);
 }
 
 // Lấy thông tin chi tiết các sản phẩm đã chọn từ database (cập nhật giá mới nhất)
@@ -51,8 +74,12 @@ foreach ($selected_keys as $key) {
     if (!isset($_SESSION['cart'][$key])) continue;
     $cart_item = $_SESSION['cart'][$key];
     $stmt = $conn->prepare("
-        SELECT s.MASP, s.TENSP, s.GIA, s.HINHANH, s.MAUSAC, s.KICHTHUOC, s.SOLUONG
+        SELECT s.MASP, s.TENSP, s.GIA, s.HINHANH, s.MAUSAC, s.KICHTHUOC, s.SOLUONG,
+               ct.gia_khuyenmai, ct.giam_phantram
         FROM sanpham s
+        LEFT JOIN chitietctkm ct ON s.MASP = ct.MASP
+        LEFT JOIN chuongtrinhkhuyenmai ctkm ON ct.MACTKM = ctkm.MACTKM 
+            AND NOW() BETWEEN ctkm.NGAYBATDAU AND ctkm.NGAYKETTHUC
         WHERE s.MASP = ? AND s.KICHTHUOC = ?
         LIMIT 1
     ");
@@ -64,6 +91,38 @@ foreach ($selected_keys as $key) {
         header('Location: shoppingcart.php');
         exit;
     }
+    
+    // Tính giá cuối cùng (ưu tiên giá từ cart đã tính khuyến mãi)
+    $final_price = $sp['GIA']; // Giá gốc mặc định
+    
+    // Debug: Log thông tin để kiểm tra
+    error_log("Product: " . $sp['TENSP']);
+    error_log("Original price from DB: " . $sp['GIA']);
+    error_log("Cart gia_ban: " . ($cart_item['gia_ban'] ?? 'none'));
+    error_log("DB gia_khuyenmai: " . ($sp['gia_khuyenmai'] ?? 'none'));
+    error_log("DB giam_phantram: " . ($sp['giam_phantram'] ?? 'none'));
+    
+    // Nếu cart có gia_ban (giá đã tính khuyến mãi) thì dùng giá đó
+    if (isset($cart_item['gia_ban']) && $cart_item['gia_ban'] > 0) {
+        $final_price = $cart_item['gia_ban'];
+        error_log("Using cart price: " . $final_price);
+    } else {
+        // Nếu không có trong cart, tính từ database
+        if ($sp['gia_khuyenmai']) {
+            $final_price = $sp['gia_khuyenmai']; // Giá khuyến mãi cố định
+            error_log("Using DB gia_khuyenmai: " . $final_price);
+        } elseif ($sp['giam_phantram']) {
+            $final_price = $sp['GIA'] * (1 - $sp['giam_phantram']/100); // Giá giảm theo %
+            error_log("Using DB giam_phantram: " . $final_price);
+        } else {
+            error_log("Using original price: " . $final_price);
+        }
+    }
+    
+    // Kiểm tra xem có khuyến mãi hay không
+    $has_sale = (isset($cart_item['has_promotion']) && $cart_item['has_promotion']) || 
+                ($sp['gia_khuyenmai'] || $sp['giam_phantram']);
+    
     $checkout_item = [
         'key' => $key,
         'masp' => $sp['MASP'],
@@ -72,8 +131,10 @@ foreach ($selected_keys as $key) {
         'mausac' => $sp['MAUSAC'],
         'kichthuoc' => $sp['KICHTHUOC'],
         'soluong' => $cart_item['soluong'],
-        'final_price' => $sp['GIA'],
-        'subtotal' => $sp['GIA'] * $cart_item['soluong']
+        'original_price' => $sp['GIA'], // Giá gốc để hiển thị
+        'final_price' => $final_price,  // Giá cuối cùng để tính toán
+        'subtotal' => $final_price * $cart_item['soluong'],
+        'has_sale' => $has_sale
     ];
     $checkout_items[] = $checkout_item;
     $total_amount += $checkout_item['subtotal'];
@@ -91,43 +152,7 @@ $voucher_discount = 0;
 $original_total = $total_amount;
 $voucher_errors = [];
 
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['apply_voucher'])) {
-    $voucher_code = strtoupper(trim($_POST['voucher_code'] ?? ''));
-    
-    if (!empty($voucher_code)) {
-        $validation = $voucherHelper->validateVoucher($voucher_code, $user['MAKH'], $total_amount);
-        
-        if ($validation['valid']) {
-            $applied_voucher = $validation['voucher'];
-            $voucher_discount = $voucherHelper->calculateDiscount($applied_voucher, $total_amount);
-            $total_amount = $original_total - $voucher_discount;
-            $_SESSION['applied_voucher'] = [
-                'code' => $voucher_code,
-                'discount' => $voucher_discount,
-                'voucher_data' => $applied_voucher
-            ];
-        } else {
-            $voucher_errors[] = $validation['message'];
-        }
-    }
-}
-
-// Khôi phục voucher từ session nếu có
-if (!$applied_voucher && isset($_SESSION['applied_voucher'])) {
-    $session_voucher = $_SESSION['applied_voucher'];
-    $validation = $voucherHelper->validateVoucher($session_voucher['code'], $user['MAKH'], $original_total);
-    
-    if ($validation['valid']) {
-        $applied_voucher = $validation['voucher'];
-        $voucher_discount = $voucherHelper->calculateDiscount($applied_voucher, $original_total);
-        $total_amount = $original_total - $voucher_discount;
-    } else {
-        unset($_SESSION['applied_voucher']);
-        $voucher_errors[] = 'Voucher đã hết hạn hoặc không còn hiệu lực';
-    }
-}
-
-// Xử lý hủy voucher
+// Reset voucher nếu có action remove
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['remove_voucher'])) {
     unset($_SESSION['applied_voucher']);
     $applied_voucher = null;
@@ -135,36 +160,97 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['remove_voucher'])) {
     $total_amount = $original_total;
 }
 
+// Apply voucher
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['apply_voucher'])) {
+    $voucher_code = strtoupper(trim($_POST['voucher_code'] ?? ''));
+    
+    if (!empty($voucher_code)) {
+        try {
+            $validation = $voucherHelper->validateVoucher($voucher_code, $user['MAKH'], $original_total);
+            
+            if ($validation['valid']) {
+                $applied_voucher = $validation['voucher'];
+                $voucher_discount = $voucherHelper->calculateDiscount($applied_voucher, $original_total);
+                $total_amount = $original_total - $voucher_discount;
+                $_SESSION['applied_voucher'] = [
+                    'code' => $voucher_code,
+                    'discount' => $voucher_discount,
+                    'voucher_data' => $applied_voucher
+                ];
+            } else {
+                $voucher_errors[] = $validation['message'];
+            }
+        } catch (Exception $e) {
+            $voucher_errors[] = 'Lỗi khi áp dụng voucher: ' . $e->getMessage();
+        }
+    } else {
+        $voucher_errors[] = 'Vui lòng nhập mã voucher';
+    }
+}
+
+// Khôi phục voucher từ session nếu có (khi không có action mới)
+if (!$applied_voucher && isset($_SESSION['applied_voucher']) && 
+    !isset($_POST['apply_voucher']) && !isset($_POST['remove_voucher'])) {
+    
+    $session_voucher = $_SESSION['applied_voucher'];
+    try {
+        $validation = $voucherHelper->validateVoucher($session_voucher['code'], $user['MAKH'], $original_total);
+        
+        if ($validation['valid']) {
+            $applied_voucher = $validation['voucher'];
+            $voucher_discount = $voucherHelper->calculateDiscount($applied_voucher, $original_total);
+            $total_amount = $original_total - $voucher_discount;
+        } else {
+            unset($_SESSION['applied_voucher']);
+            $voucher_errors[] = 'Voucher đã hết hạn hoặc không còn hiệu lực';
+        }
+    } catch (Exception $e) {
+        unset($_SESSION['applied_voucher']);
+        $voucher_errors[] = 'Lỗi kiểm tra voucher: ' . $e->getMessage();
+    }
+}
+
 // Lấy danh sách voucher có thể sử dụng
-$available_vouchers = $voucherHelper->getAvailableVouchers($user['MAKH'], $original_total);
+$available_vouchers = [];
+try {
+    $available_vouchers = $voucherHelper->getAvailableVouchers($user['MAKH'], $original_total);
+} catch (Exception $e) {
+    error_log("Error getting available vouchers: " . $e->getMessage());
+}
 
 // Xử lý form submit
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['place_order'])) {
-    $fullname = trim($_POST['fullname'] ?? '');
-    $phone = trim($_POST['phone'] ?? '');
-    $address = trim($_POST['address'] ?? '');
     $payment_method = $_POST['payment_method'] ?? '';
     $notes = trim($_POST['notes'] ?? '');
 
     $errors = [];
-    if (empty($fullname)) $errors[] = 'Vui lòng nhập họ tên';
-    if (empty($phone)) $errors[] = 'Vui lòng nhập số điện thoại';
-    if (empty($address)) $errors[] = 'Vui lòng nhập địa chỉ giao hàng';
+    
+    // Kiểm tra thông tin khách hàng từ database
+    if (empty($khachhang['TENKH'])) $errors[] = 'Vui lòng cập nhật họ tên trong trang Profile';
+    if (empty($khachhang['SDT'])) $errors[] = 'Vui lòng cập nhật số điện thoại trong trang Profile';  
+    if (empty($khachhang['DIACHI'])) $errors[] = 'Vui lòng cập nhật địa chỉ trong trang Profile';
     if (empty($payment_method)) $errors[] = 'Vui lòng chọn phương thức thanh toán';
 
     if (empty($errors)) {
+        // Sử dụng thông tin từ database
+        $fullname = $khachhang['TENKH'];
+        $phone = $khachhang['SDT'];
+        $address = $khachhang['DIACHI'];
+        
         try {
+            // Bắt đầu transaction
             $conn->beginTransaction();
             
-            // Debug logging
             error_log("Starting checkout process for user: " . $user['MAKH']);
             
             $order_code = 'DH' . date('YmdHis') . rand(100, 999);
+            $mahd = 'HD' . date('YmdHis') . rand(100, 999);
             
-            // Debug: Log order code
             error_log("Generated order code: " . $order_code);
+            
+            // Tạo đơn hàng
             $stmt = $conn->prepare("
-                INSERT INTO donhang (MADONHANG, MAKH, NGAYDAT, TONGTIEN, TRANGTHAI, HOTEN, SODIENTHOAI, DIACHI, PHUONGTHUCTHANHTOAN, GHICHU, MAVOUCHER, GIAMGIA)
+                INSERT INTO donhang (MADONHANG, MAKH, NGAYDAT, TONGTIEN, TRANGTHAI, HOTEN, SODIENTHOAI, DIACHI, PHUONGTHUCTHANHTOAN, GHICHU, MAVOUCHER, GIATRIGIAM)
                 VALUES (?, ?, NOW(), ?, 'Chờ xử lý', ?, ?, ?, ?, ?, ?, ?)
             ");
             $stmt->execute([
@@ -179,30 +265,21 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['place_order'])) {
                 $applied_voucher ? $applied_voucher['MAVOUCHER'] : null,
                 $voucher_discount
             ]);
-            $madonhang = $order_code;
-            if ($madonhang) {
-                $stmt = $conn->prepare("SELECT MAKH, TONGTIEN FROM donhang WHERE MADONHANG = ?");
-                $stmt->execute([$madonhang]);
-                $order = $stmt->fetch(PDO::FETCH_ASSOC);
-                if ($order) {
-                    $makh = $order['MAKH'];
-                    $tongtien = $order['TONGTIEN'];
-                    $mahd = 'HD' . date('YmdHis') . uniqid(rand(), true);
-                    $mahd = substr($mahd, 0, 20);
-                    $stmt = $conn->prepare("INSERT INTO hoadon (MAHD, MAKH, NGAYLAP, TONGTIEN, TRANGTHAI) VALUES (?, ?, NOW(), ?, 'Đã xác nhận')");
-                    $stmt->execute([$mahd, $makh, $tongtien]);
-                }
-            }
+            
+            // Tạo hóa đơn
+            $stmt = $conn->prepare("INSERT INTO hoadon (MAHD, MAKH, NGAYLAP, TONGTIEN, TRANGTHAI) VALUES (?, ?, NOW(), ?, 'Đã xác nhận')");
+            $stmt->execute([$mahd, $user['MAKH'], $total_amount]);
+            
+            // Xử lý từng sản phẩm
             foreach ($checkout_items as $item) {
-                // Debug: Log item being processed
                 error_log("Processing item: " . json_encode($item));
                 
-                // Insert vào chi tiết đơn hàng
+                // Thêm vào chi tiết đơn hàng
                 $stmt = $conn->prepare("
                     INSERT INTO chitietdonhang (MADONHANG, MASP, KICHTHUOC, SOLUONG, GIA, THANHTIEN)
                     VALUES (?, ?, ?, ?, ?, ?)
                 ");
-                $result = $stmt->execute([
+                $stmt->execute([
                     $order_code,
                     $item['masp'],
                     $item['kichthuoc'],
@@ -211,26 +288,22 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['place_order'])) {
                     $item['subtotal']
                 ]);
                 
-                if (!$result) {
-                    throw new Exception("Failed to insert into chitietdonhang for " . $item['masp']);
-                }
-                
-                // Insert vào chi tiết hóa đơn (sử dụng ON DUPLICATE KEY UPDATE để xử lý trùng lặp)
+                // Thêm vào chi tiết hóa đơn
                 $stmt = $conn->prepare("
-                    INSERT INTO chitiethoadon (MAHD, MASP, SOLUONG, DONGIA)
-                    VALUES (?, ?, ?, ?)
-                    ON DUPLICATE KEY UPDATE
-                        SOLUONG = SOLUONG + VALUES(SOLUONG)
-                ");
-                $stmt->execute([
-                    $mahd,
-                    $item['masp'],
-                    $item['soluong'],
-                    $item['final_price']
-                ]);
+    INSERT INTO chitiethoadon (MAHD, MASP, SOLUONG, DONGIA)
+    VALUES (?, ?, ?, ?)
+    ON DUPLICATE KEY UPDATE
+        SOLUONG = SOLUONG + VALUES(SOLUONG)
+");
+$stmt->execute([
+    $mahd,
+    $item['masp'],
+    $item['soluong'],
+    $item['final_price']
+]);
 
-                
-                // Trừ số lượng tồn kho
+
+                // Cập nhật số lượng sản phẩm
                 $stmt = $conn->prepare("
                     UPDATE sanpham 
                     SET SOLUONG = SOLUONG - ? 
@@ -243,35 +316,52 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['place_order'])) {
                     $item['soluong']
                 ]);
                 
+                // Xóa sản phẩm khỏi giỏ hàng
                 unset($_SESSION['cart'][$item['key']]);
             }
 
-            // Áp dụng voucher nếu có
+            // Áp dụng voucher nếu có (không dùng VoucherHelper để tránh lỗi)
             if ($applied_voucher) {
-                $result = $voucherHelper->applyVoucher(
-                    $applied_voucher['MAVOUCHER'], 
-                    $user['MAKH'], 
-                    $order_code, 
-                    $original_total
-                );
-                
-                if (!$result['success']) {
-                    // Log error nhưng vẫn cho đặt hàng thành công
-                    error_log("Voucher application failed: " . $result['message']);
+                try {
+                    $stmt = $conn->prepare("
+                        INSERT INTO voucher_usage (MAVOUCHER, MAKH, MADONHANG, NGAYSUDUNG, GIATRISUDUNG)
+                        VALUES (?, ?, ?, NOW(), ?)
+                    ");
+                    $stmt->execute([
+                        $applied_voucher['MAVOUCHER'],
+                        $user['MAKH'],
+                        $order_code,
+                        $voucher_discount
+                    ]);
+                    
+                    // Cập nhật số lượng đã sử dụng
+                    $stmt = $conn->prepare("
+                        UPDATE voucher 
+                        SET SOLUONGSUDUNG = SOLUONGSUDUNG + 1 
+                        WHERE MAVOUCHER = ?
+                    ");
+                    $stmt->execute([$applied_voucher['MAVOUCHER']]);
+                    
+                } catch (Exception $e) {
+                    error_log("Voucher application error: " . $e->getMessage());
                 }
                 
-                // Xóa voucher khỏi session
                 unset($_SESSION['applied_voucher']);
             }
 
+            // Commit transaction
             $conn->commit();
+            
             $_SESSION['order_success'] = "Đặt hàng thành công! Mã đơn hàng: {$order_code}";
             header('Location: order_success.php?order=' . $order_code);
             exit;
-        } catch (Exception $e) {
-            $conn->rollBack();
             
-            // Log detailed error information
+        } catch (Exception $e) {
+            // Rollback chỉ khi có transaction active
+            if ($conn->inTransaction()) {
+                $conn->rollBack();
+            }
+            
             error_log("Checkout error: " . $e->getMessage());
             error_log("Error trace: " . $e->getTraceAsString());
             
@@ -289,7 +379,7 @@ $final_total = $total_amount + $shipping_fee;
 <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
-    <title>Thanh toán - MENSTA</title>
+    <title>Thanh toán đơn hàng - MENSTA</title>
     <link rel="stylesheet" href="/web_3/view/css/style.css"/>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
@@ -302,7 +392,7 @@ $final_total = $total_amount + $shipping_fee;
         
         body {
             font-family: "Inter", sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            background-color: #f8f9fa;
             min-height: 100vh;
             padding: 20px 0;
         }
@@ -315,129 +405,109 @@ $final_total = $total_amount + $shipping_fee;
 
         .checkout-header {
             text-align: center;
-            margin-bottom: 40px;
+            margin-bottom: 30px;
+            background: white;
+            padding: 30px;
+            border-radius: 12px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
         }
 
         .checkout-header h1 {
-            color: white;
-            font-size: 2.5rem;
+            color: #007bff;
+            font-size: 2rem;
             font-weight: 700;
             margin-bottom: 10px;
-            text-shadow: 0 2px 4px rgba(0,0,0,0.3);
         }
 
         .checkout-header p {
-            color: rgba(255,255,255,0.9);
-            font-size: 1.1rem;
+            color: #6c757d;
+            font-size: 1rem;
         }
 
         .checkout-layout {
-            display: grid;
-            grid-template-columns: 1fr 400px;
-            gap: 30px;
-            align-items: start;
+            display: flex;
+            flex-direction: column;
+            gap: 20px;
         }
 
         .checkout-main {
             display: flex;
             flex-direction: column;
-            gap: 25px;
+            gap: 20px;
         }
 
-        .card {
+        .section-card {
             background: white;
-            border-radius: 16px;
+            border-radius: 8px;
             padding: 25px;
-            box-shadow: 0 10px 40px rgba(0,0,0,0.1);
-            border: 1px solid rgba(255,255,255,0.2);
+            box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+            border: 1px solid #e9ecef;
         }
 
-        .card-header {
+        .section-header {
             display: flex;
             align-items: center;
             margin-bottom: 20px;
             padding-bottom: 15px;
-            border-bottom: 2px solid #f1f3f4;
+            border-bottom: 1px solid #e9ecef;
         }
 
-        .card-header i {
-            font-size: 1.5rem;
-            margin-right: 12px;
-            color: #667eea;
+        .section-header i {
+            font-size: 1.2rem;
+            margin-right: 10px;
+            color: #007bff;
         }
 
-        .card-header h3 {
-            font-size: 1.3rem;
+        .section-header h3 {
+            font-size: 1.1rem;
             font-weight: 600;
-            color: #2d3748;
+            color: #495057;
         }
 
         /* Products Section */
         .product-item {
             display: flex;
-            padding: 20px;
-            background: #f8fafc;
-            border-radius: 12px;
+            align-items: center;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 8px;
             margin-bottom: 15px;
-            border: 1px solid #e2e8f0;
-            transition: all 0.3s ease;
-        }
-
-        .product-item:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 20px rgba(0,0,0,0.1);
+            border: 1px solid #e9ecef;
         }
 
         .product-image {
-            width: 90px;
-            height: 90px;
-            border-radius: 12px;
+            width: 60px;
+            height: 60px;
+            border-radius: 6px;
             object-fit: cover;
-            margin-right: 20px;
-            border: 2px solid #e2e8f0;
+            margin-right: 15px;
+            border: 1px solid #dee2e6;
         }
 
         .product-info {
             flex: 1;
-            display: flex;
-            flex-direction: column;
-            gap: 8px;
         }
 
         .product-name {
             font-weight: 600;
-            font-size: 1.1rem;
-            color: #2d3748;
+            font-size: 0.95rem;
+            color: #495057;
             margin-bottom: 5px;
         }
 
         .product-details {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 10px;
-            font-size: 0.95rem;
-        }
-
-        .product-detail-item {
+            font-size: 0.85rem;
+            color: #6c757d;
             display: flex;
-            justify-content: space-between;
-            align-items: center;
+            gap: 15px;
+            flex-wrap: wrap;
         }
 
-        .product-detail-label {
-            color: #64748b;
-            font-weight: 500;
-        }
-
-        .product-detail-value {
-            color: #2d3748;
+        .product-price {
+            text-align: right;
             font-weight: 600;
-        }
-
-        .product-subtotal {
-            color: #dc2626;
-            font-weight: 700;
-            font-size: 1.1rem;
+            color: #dc3545;
+            font-size: 0.95rem;
         }
 
         /* Form Styles */
@@ -458,299 +528,253 @@ $final_total = $total_amount + $shipping_fee;
 
         .form-label {
             font-weight: 600;
-            color: #374151;
+            color: #495057;
             margin-bottom: 8px;
-            font-size: 0.95rem;
+            font-size: 0.9rem;
         }
 
         .form-control {
-            padding: 12px 16px;
-            border: 2px solid #e5e7eb;
-            border-radius: 10px;
-            font-size: 1rem;
-            transition: all 0.3s ease;
-            background: #fafafa;
+            padding: 12px 15px;
+            border: 1px solid #ced4da;
+            border-radius: 6px;
+            font-size: 0.95rem;
+            transition: all 0.2s ease;
+            background: white;
         }
 
         .form-control:focus {
             outline: none;
-            border-color: #667eea;
+            border-color: #007bff;
+            box-shadow: 0 0 0 2px rgba(0, 123, 255, 0.15);
+        }
+
+        /* Customer Info Display */
+        .customer-info-display {
+            background: #f8f9fa;
+            border: 1px solid #e9ecef;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+
+        .info-group {
+            display: flex;
+            margin-bottom: 15px;
+            align-items: center;
+        }
+
+        .info-group:last-child {
+            margin-bottom: 0;
+        }
+
+        .info-label {
+            font-weight: 600;
+            color: #495057;
+            width: 140px;
+            flex-shrink: 0;
+            font-size: 0.9rem;
+        }
+
+        .info-value {
+            flex: 1;
+            color: #212529;
+            font-size: 0.95rem;
+            padding: 8px 12px;
             background: white;
-            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+            border: 1px solid #ced4da;
+            border-radius: 4px;
+        }
+
+        .edit-profile-btn {
+            background: #17a2b8;
+            color: white;
+            text-decoration: none;
+            padding: 8px 15px;
+            border-radius: 4px;
+            font-size: 0.85rem;
+            font-weight: 500;
+            transition: all 0.2s ease;
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+        }
+
+        .edit-profile-btn:hover {
+            background: #138496;
+            color: white;
+            text-decoration: none;
         }
 
         /* Voucher Section */
         .voucher-section {
-            border: 2px dashed #e5e7eb;
-            border-radius: 12px;
+            border: 2px dashed #ced4da;
+            border-radius: 8px;
             padding: 20px;
-            background: #fafbfc;
+            background: #f8f9fa;
         }
 
         .voucher-input-group {
             display: flex;
-            gap: 12px;
-            margin-bottom: 20px;
+            gap: 10px;
+            margin-bottom: 15px;
         }
 
         .voucher-input {
             flex: 1;
-            padding: 14px 18px;
-            border: 2px solid #e5e7eb;
-            border-radius: 10px;
-            font-size: 1rem;
+            padding: 12px 15px;
+            border: 1px solid #ced4da;
+            border-radius: 6px;
+            font-size: 0.95rem;
             text-transform: uppercase;
             font-weight: 600;
-            letter-spacing: 1px;
         }
 
         .voucher-apply-btn {
-            background: linear-gradient(135deg, #10b981, #059669);
+            background: #28a745;
             color: white;
             border: none;
-            padding: 14px 24px;
-            border-radius: 10px;
+            padding: 12px 20px;
+            border-radius: 6px;
             font-weight: 600;
             cursor: pointer;
-            transition: all 0.3s ease;
+            transition: all 0.2s ease;
+            white-space: nowrap;
         }
 
         .voucher-apply-btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 5px 15px rgba(16, 185, 129, 0.4);
+            background: #218838;
         }
 
         .voucher-applied {
-            background: linear-gradient(135deg, #10b981, #059669);
-            color: white;
-            padding: 20px;
-            border-radius: 12px;
-            margin-bottom: 20px;
+            background: #d4edda;
+            color: #155724;
+            padding: 15px;
+            border-radius: 6px;
+            margin-bottom: 15px;
+            border: 1px solid #c3e6cb;
         }
 
         .voucher-applied-content {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 15px;
-        }
-
-        .voucher-code {
-            font-size: 1.2rem;
-            font-weight: 700;
-            letter-spacing: 1px;
-        }
-
-        .voucher-discount {
-            font-size: 1.3rem;
-            font-weight: 700;
-        }
-
-        .voucher-remove-btn {
-            background: rgba(255,255,255,0.2);
-            color: white;
-            border: none;
-            padding: 8px 16px;
-            border-radius: 8px;
-            font-size: 0.9rem;
-            cursor: pointer;
-            transition: all 0.3s ease;
-        }
-
-        .voucher-remove-btn:hover {
-            background: rgba(255,255,255,0.3);
-        }
-
-        .available-vouchers-toggle {
-            background: none;
-            border: none;
-            color: #667eea;
-            font-weight: 600;
-            cursor: pointer;
-            text-decoration: underline;
-            padding: 0;
-            margin-bottom: 15px;
-        }
-
-        .voucher-list {
-            max-height: 300px;
-            overflow-y: auto;
-            border: 1px solid #e5e7eb;
-            border-radius: 10px;
-            background: white;
-        }
-
-        .voucher-item {
-            padding: 16px;
-            border-bottom: 1px solid #f1f3f4;
-            cursor: pointer;
-            transition: all 0.3s ease;
-        }
-
-        .voucher-item:last-child {
-            border-bottom: none;
-        }
-
-        .voucher-item:hover {
-            background: #f8fafc;
-        }
-
-        .voucher-item.disabled {
-            opacity: 0.6;
-            cursor: not-allowed;
-        }
-
-        .voucher-item-code {
-            font-weight: 700;
-            color: #667eea;
-            font-size: 1.1rem;
-            margin-bottom: 5px;
-        }
-
-        .voucher-item-name {
-            font-weight: 600;
-            color: #2d3748;
-            margin-bottom: 8px;
-        }
-
-        .voucher-item-desc {
-            color: #64748b;
-            font-size: 0.9rem;
             margin-bottom: 10px;
         }
 
-        .voucher-item-footer {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            font-size: 0.85rem;
+        .voucher-code {
+            font-size: 1rem;
+            font-weight: 700;
         }
 
-        .voucher-item-condition {
-            color: #64748b;
+        .voucher-discount {
+            font-size: 1.1rem;
+            font-weight: 700;
+            color: #dc3545;
         }
 
-        .voucher-item-savings {
-            font-weight: 600;
+        .voucher-remove-btn {
+            background: #dc3545;
+            color: white;
+            border: none;
+            padding: 6px 12px;
+            border-radius: 4px;
+            font-size: 0.8rem;
+            cursor: pointer;
+            transition: all 0.2s ease;
         }
 
-        .voucher-item-savings.available {
-            color: #10b981;
+        .voucher-remove-btn:hover {
+            background: #c82333;
         }
 
-        .voucher-item-savings.unavailable {
-            color: #dc2626;
-        }
-
-        /* Order Summary */
-        .order-summary {
-            position: sticky;
-            top: 20px;
-        }
+        /* Order Summary - now integrated in main layout */
 
         .summary-item {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 12px 0;
-            border-bottom: 1px solid #f1f3f4;
+            padding: 10px 0;
+            border-bottom: 1px solid #e9ecef;
+            font-size: 0.95rem;
         }
 
         .summary-item:last-child {
             border-bottom: none;
-            border-top: 2px solid #e5e7eb;
+            border-top: 2px solid #007bff;
             padding-top: 15px;
             margin-top: 10px;
+            font-weight: 700;
+            font-size: 1.1rem;
         }
 
         .summary-label {
-            color: #64748b;
-            font-weight: 500;
+            color: #6c757d;
         }
 
         .summary-value {
             font-weight: 600;
-            color: #2d3748;
+            color: #495057;
         }
 
         .summary-discount {
-            color: #10b981;
+            color: #28a745;
             font-weight: 600;
         }
 
         .summary-total {
-            font-size: 1.4rem;
+            color: #007bff;
             font-weight: 700;
-            color: #dc2626;
         }
 
         /* Checkout Button */
         .checkout-btn {
-            background: linear-gradient(135deg, #667eea, #764ba2);
+            background: #007bff;
             color: white;
             border: none;
-            padding: 18px 30px;
-            border-radius: 12px;
-            font-size: 1.2rem;
+            padding: 15px 25px;
+            border-radius: 6px;
+            font-size: 1.1rem;
             font-weight: 700;
             cursor: pointer;
-            transition: all 0.3s ease;
+            transition: all 0.2s ease;
             width: 100%;
-            margin-top: 20px;
+            margin-top: 15px;
         }
 
         .checkout-btn:hover {
-            transform: translateY(-3px);
-            box-shadow: 0 10px 30px rgba(102, 126, 234, 0.4);
+            background: #0056b3;
         }
 
         .checkout-btn:disabled {
-            background: #9ca3af;
+            background: #6c757d;
             cursor: not-allowed;
-            transform: none;
-            box-shadow: none;
         }
 
         /* Alerts */
         .alert {
-            padding: 15px;
-            border-radius: 10px;
+            padding: 12px 15px;
+            border-radius: 6px;
             margin-bottom: 20px;
             border: 1px solid transparent;
+            font-size: 0.9rem;
         }
 
         .alert-danger {
-            background: #fef2f2;
-            color: #dc2626;
-            border-color: #fecaca;
+            background: #f8d7da;
+            color: #721c24;
+            border-color: #f5c6cb;
         }
 
         .alert-success {
-            background: #f0fdf4;
-            color: #16a34a;
-            border-color: #bbf7d0;
+            background: #d4edda;
+            color: #155724;
+            border-color: #c3e6cb;
         }
 
         /* Responsive */
-        @media (max-width: 1024px) {
-            .checkout-layout {
-                grid-template-columns: 1fr;
-                gap: 20px;
-            }
-            
-            .order-summary {
-                position: static;
-                order: -1;
-            }
-        }
-
         @media (max-width: 768px) {
             .checkout-container {
                 padding: 0 15px;
-            }
-            
-            .checkout-header h1 {
-                font-size: 2rem;
             }
             
             .form-grid {
@@ -763,14 +787,10 @@ $final_total = $total_amount + $shipping_fee;
             }
             
             .product-image {
-                width: 100%;
-                height: 200px;
+                width: 80px;
+                height: 80px;
                 margin-right: 0;
-                margin-bottom: 15px;
-            }
-            
-            .product-details {
-                grid-template-columns: 1fr;
+                margin-bottom: 10px;
             }
             
             .voucher-input-group {
@@ -778,20 +798,53 @@ $final_total = $total_amount + $shipping_fee;
             }
         }
 
-        /* Loading States */
-        .loading {
-            opacity: 0.7;
-            pointer-events: none;
+        .available-vouchers {
+            font-size: 0.85rem;
+            color: #007bff;
+            text-decoration: underline;
+            cursor: pointer;
+            margin-bottom: 10px;
         }
 
-        /* Animation */
-        .fade-in {
-            animation: fadeIn 0.5s ease-in;
+        .voucher-list {
+            max-height: 250px;
+            overflow-y: auto;
+            border: 1px solid #ced4da;
+            border-radius: 6px;
+            background: white;
+            display: none;
         }
 
-        @keyframes fadeIn {
-            from { opacity: 0; transform: translateY(20px); }
-            to { opacity: 1; transform: translateY(0); }
+        .voucher-item {
+            padding: 12px;
+            border-bottom: 1px solid #e9ecef;
+            cursor: pointer;
+            transition: background 0.2s ease;
+        }
+
+        .voucher-item:hover {
+            background: #f8f9fa;
+        }
+
+        .voucher-item:last-child {
+            border-bottom: none;
+        }
+
+        .voucher-item-code {
+            font-weight: 700;
+            color: #007bff;
+            font-size: 0.9rem;
+        }
+
+        .voucher-item-name {
+            font-size: 0.85rem;
+            color: #495057;
+            margin: 3px 0;
+        }
+
+        .voucher-item-desc {
+            font-size: 0.8rem;
+            color: #6c757d;
         }
     </style>
 </head>
@@ -805,7 +858,7 @@ $final_total = $total_amount + $shipping_fee;
 
         <!-- Error Messages -->
         <?php if (isset($errors) && !empty($errors)): ?>
-            <div class="alert alert-danger fade-in">
+            <div class="alert alert-danger">
                 <i class="fas fa-exclamation-triangle"></i>
                 <?php foreach ($errors as $err): ?>
                     <div><?php echo htmlspecialchars($err); ?></div>
@@ -813,12 +866,29 @@ $final_total = $total_amount + $shipping_fee;
             </div>
         <?php endif; ?>
 
+        <?php if (!empty($voucher_errors)): ?>
+            <div class="alert alert-danger">
+                <i class="fas fa-exclamation-circle"></i> 
+                <?php foreach ($voucher_errors as $error): ?>
+                    <div><?php echo htmlspecialchars($error); ?></div>
+                <?php endforeach; ?>
+            </div>
+        <?php endif; ?>
+
+        <!-- Return from profile notification -->
+        <?php if (isset($_GET['return']) && $_GET['return'] === 'profile'): ?>
+            <div class="alert alert-success">
+                <i class="fas fa-check-circle"></i> 
+                Đã cập nhật thông tin thành công! Vui lòng kiểm tra lại thông tin và hoàn tất đơn hàng.
+            </div>
+        <?php endif; ?>
+
         <div class="checkout-layout">
             <!-- Main Content -->
             <div class="checkout-main">
                 <!-- Products Section -->
-                <div class="card fade-in">
-                    <div class="card-header">
+                <div class="section-card">
+                    <div class="section-header">
                         <i class="fas fa-box-open"></i>
                         <h3>Sản phẩm đã chọn (<?php echo count($checkout_items); ?> sản phẩm)</h3>
                     </div>
@@ -831,76 +901,75 @@ $final_total = $total_amount + $shipping_fee;
                             <div class="product-info">
                                 <div class="product-name"><?= htmlspecialchars($item['tensp']) ?></div>
                                 <div class="product-details">
-                                    <div class="product-detail-item">
-                                        <span class="product-detail-label">Màu sắc:</span>
-                                        <span class="product-detail-value"><?= htmlspecialchars($item['mausac']) ?></span>
-                                    </div>
-                                    <div class="product-detail-item">
-                                        <span class="product-detail-label">Kích thước:</span>
-                                        <span class="product-detail-value"><?= htmlspecialchars($item['kichthuoc']) ?></span>
-                                    </div>
-                                    <div class="product-detail-item">
-                                        <span class="product-detail-label">Đơn giá:</span>
-                                        <span class="product-detail-value"><?= number_format($item['final_price']) ?>đ</span>
-                                    </div>
-                                    <div class="product-detail-item">
-                                        <span class="product-detail-label">Số lượng:</span>
-                                        <span class="product-detail-value"><?= $item['soluong'] ?></span>
-                                    </div>
-                                </div>
-                                <div class="product-detail-item" style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #e5e7eb;">
-                                    <span class="product-detail-label">Thành tiền:</span>
-                                    <span class="product-subtotal"><?= number_format($item['subtotal']) ?>đ</span>
+                                    <span>Màu: <?= htmlspecialchars($item['mausac']) ?></span>
+                                    <span>Size: <?= htmlspecialchars($item['kichthuoc']) ?></span>
+                                    <span>SL: <?= $item['soluong'] ?></span>
                                 </div>
                             </div>
-                            <input type="hidden" name="selected_items[]" value="<?= htmlspecialchars($item['key']) ?>">
+                            <div class="product-price">
+                                <?php if ($item['has_sale']): ?>
+                                    <div style="font-size: 0.8rem; color: #888; text-decoration: line-through;">
+                                        <?= number_format($item['original_price'] * $item['soluong']) ?>đ
+                                    </div>
+                                    <div style="color: #dc3545; font-weight: 600;">
+                                        <?= number_format($item['subtotal']) ?>đ
+                                    </div>
+                                    <div style="font-size: 0.75rem; color: #28a745;">
+                                        <i class="fas fa-tag"></i> SALE
+                                    </div>
+                                <?php else: ?>
+                                    <?= number_format($item['subtotal']) ?>đ
+                                <?php endif; ?>
+                            </div>
                         </div>
                     <?php endforeach; ?>
                 </div>
 
                 <!-- Customer Information -->
-                <div class="card fade-in">
-                    <div class="card-header">
+                <div class="section-card">
+                    <div class="section-header">
                         <i class="fas fa-user"></i>
                         <h3>Thông tin giao hàng</h3>
+                        <div style="margin-left: auto;">
+                            <a href="profile.php?return=checkout" class="edit-profile-btn">
+                                <i class="fas fa-edit"></i> Chỉnh sửa thông tin
+                            </a>
+                        </div>
                     </div>
                     <form id="checkoutForm" method="POST">
-                        <!-- Hidden inputs for selected items -->
-                        <?php foreach ($checkout_items as $item): ?>
-                            <input type="hidden" name="selected_items[]" value="<?= htmlspecialchars($item['key']) ?>">
-                        <?php endforeach; ?>
+                        <!-- Hidden inputs for customer info -->
+                        <input type="hidden" name="fullname" value="<?= htmlspecialchars($khachhang['TENKH'] ?? '') ?>">
+                        <input type="hidden" name="phone" value="<?= htmlspecialchars($khachhang['SDT'] ?? '') ?>">
+                        <input type="hidden" name="address" value="<?= htmlspecialchars($khachhang['DIACHI'] ?? '') ?>">
                         
-                        <div class="form-grid">
-                            <div class="form-group">
-                                <label class="form-label">Họ và tên *</label>
-                                <input type="text" name="fullname" class="form-control" required
-                                       value="<?= htmlspecialchars($_POST['fullname'] ?? $khachhang['TENKH'] ?? '') ?>"
-                                       placeholder="VD: Nguyễn Văn A">
+                        <div class="customer-info-display">
+                            <div class="info-group">
+                                <label class="info-label">Họ và tên:</label>
+                                <div class="info-value"><?= htmlspecialchars($khachhang['TENKH'] ?? 'Chưa cập nhật') ?></div>
                             </div>
-                            <div class="form-group">
-                                <label class="form-label">Số điện thoại *</label>
-                                <input type="tel" name="phone" class="form-control" required
-                                       value="<?= htmlspecialchars($_POST['phone'] ?? $khachhang['SDT'] ?? '') ?>"
-                                       placeholder="VD: 0901234567">
+                            <div class="info-group">
+                                <label class="info-label">Số điện thoại:</label>
+                                <div class="info-value"><?= htmlspecialchars($khachhang['SDT'] ?? 'Chưa cập nhật') ?></div>
                             </div>
-                            <div class="form-group full-width">
-                                <label class="form-label">Địa chỉ giao hàng *</label>
-                                <input type="text" name="address" class="form-control" required
-                                       value="<?= htmlspecialchars($_POST['address'] ?? $khachhang['DIACHI'] ?? '') ?>"
-                                       placeholder="VD: 123 Đường ABC, Phường XYZ, Quận 1, TP.HCM">
+                            <div class="info-group">
+                                <label class="info-label">Địa chỉ giao hàng:</label>
+                                <div class="info-value"><?= htmlspecialchars($khachhang['DIACHI'] ?? 'Chưa cập nhật') ?></div>
                             </div>
+                        </div>
+                        
+                        <div class="form-grid" style="margin-top: 20px;">
                             <div class="form-group">
                                 <label class="form-label">Phương thức thanh toán *</label>
                                 <select name="payment_method" class="form-control" required>
                                     <option value="">-- Chọn phương thức thanh toán --</option>
                                     <option value="COD" <?= (($_POST['payment_method'] ?? '') === 'COD') ? 'selected' : '' ?>>
-                                        💵 Thanh toán khi nhận hàng (COD)
+                                        Thanh toán khi nhận hàng (COD)
                                     </option>
                                     <option value="Bank" <?= (($_POST['payment_method'] ?? '') === 'Bank') ? 'selected' : '' ?>>
-                                        🏦 Chuyển khoản ngân hàng
+                                        Chuyển khoản ngân hàng
                                     </option>
                                     <option value="Momo" <?= (($_POST['payment_method'] ?? '') === 'Momo') ? 'selected' : '' ?>>
-                                        📱 Ví điện tử MoMo
+                                        Ví điện tử MoMo
                                     </option>
                                 </select>
                             </div>
@@ -908,29 +977,20 @@ $final_total = $total_amount + $shipping_fee;
                                 <label class="form-label">Ghi chú</label>
                                 <input type="text" name="notes" class="form-control"
                                        value="<?= htmlspecialchars($_POST['notes'] ?? '') ?>"
-                                       placeholder="Ghi chú thêm cho đơn hàng (tùy chọn)">
+                                       placeholder="Ghi chú đơn hàng (tùy chọn)">
                             </div>
                         </div>
                     </form>
                 </div>
 
                 <!-- Voucher Section -->
-                <div class="card fade-in">
-                    <div class="card-header">
-                        <i class="fas fa-ticket-alt"></i>
+                <div class="section-card">
+                    <div class="section-header">
+                        <i class="fas fa-tag"></i>
                         <h3>Mã giảm giá</h3>
                     </div>
                     
                     <div class="voucher-section">
-                        <?php if (!empty($voucher_errors)): ?>
-                            <div class="alert alert-danger">
-                                <i class="fas fa-exclamation-circle"></i>
-                                <?php foreach ($voucher_errors as $error): ?>
-                                    <div><?php echo htmlspecialchars($error); ?></div>
-                                <?php endforeach; ?>
-                            </div>
-                        <?php endif; ?>
-                        
                         <?php if ($applied_voucher): ?>
                             <!-- Applied Voucher -->
                             <div class="voucher-applied">
@@ -940,19 +1000,15 @@ $final_total = $total_amount + $shipping_fee;
                                             <i class="fas fa-ticket-alt"></i>
                                             <?php echo htmlspecialchars($applied_voucher['MAVOUCHER']); ?>
                                         </div>
-                                        <div style="margin-top: 5px; font-size: 1rem; opacity: 0.9;">
-                                            <?php echo htmlspecialchars($applied_voucher['TENVOUCHER']); ?>
+                                        <div style="font-size: 0.85rem; margin-top: 3px;">
+                                            <?php echo htmlspecialchars($applied_voucher['TENVOUCHER'] ?? 'Voucher giảm giá'); ?>
                                         </div>
                                     </div>
                                     <div class="voucher-discount">
-                                        <i class="fas fa-tags"></i>
                                         -<?php echo number_format($voucher_discount); ?>đ
                                     </div>
                                 </div>
                                 <form method="POST" style="display: inline;">
-                                    <?php foreach ($checkout_items as $item): ?>
-                                        <input type="hidden" name="selected_items[]" value="<?= htmlspecialchars($item['key']) ?>">
-                                    <?php endforeach; ?>
                                     <button type="submit" name="remove_voucher" class="voucher-remove-btn">
                                         <i class="fas fa-times"></i> Hủy voucher
                                     </button>
@@ -961,84 +1017,56 @@ $final_total = $total_amount + $shipping_fee;
                         <?php else: ?>
                             <!-- Voucher Input -->
                             <form method="POST" id="voucherForm">
-                                <?php foreach ($checkout_items as $item): ?>
-                                    <input type="hidden" name="selected_items[]" value="<?= htmlspecialchars($item['key']) ?>">
-                                <?php endforeach; ?>
                                 <div class="voucher-input-group">
                                     <input type="text" 
                                            name="voucher_code" 
                                            class="voucher-input"
-                                           placeholder="Nhập mã voucher (VD: SAVE20)"
+                                           placeholder="Nhập mã voucher"
                                            value="<?php echo htmlspecialchars($_POST['voucher_code'] ?? ''); ?>">
                                     <button type="submit" name="apply_voucher" class="voucher-apply-btn">
-                                        <i class="fas fa-check"></i> Áp dụng
+                                        Áp dụng
                                     </button>
                                 </div>
                             </form>
                             
                             <!-- Available Vouchers -->
                             <?php if (!empty($available_vouchers)): ?>
-                                <button type="button" class="available-vouchers-toggle" onclick="toggleVoucherList()">
+                                <div class="available-vouchers" onclick="toggleVoucherList()">
                                     <i class="fas fa-gift"></i> 
-                                    Xem voucher có thể sử dụng (<?php echo count($available_vouchers); ?> voucher)
-                                </button>
+                                    Chọn voucher có sẵn (<?php echo count($available_vouchers); ?> voucher)
+                                </div>
                                 
-                                <div id="voucher-list" style="display: none;">
-                                    <div class="voucher-list">
-                                        <?php foreach ($available_vouchers as $voucher): ?>
-                                            <div class="voucher-item <?php echo $voucher['can_use'] ? '' : 'disabled'; ?>" 
-                                                 onclick="selectVoucher('<?php echo htmlspecialchars($voucher['code'] ?? ''); ?>', <?php echo $voucher['can_use'] ? 'true' : 'false'; ?>)">
-                                                <div class="voucher-item-code">
-                                                    <i class="fas fa-ticket-alt"></i>
-                                                    <?php echo htmlspecialchars($voucher['code'] ?? ''); ?>
-                                                </div>
-                                                <div class="voucher-item-name">
-                                                    <?php echo htmlspecialchars($voucher['name'] ?? ''); ?>
-                                                </div>
-                                                <?php if (isset($voucher['description']) && $voucher['description']): ?>
-                                                    <div class="voucher-item-desc">
-                                                        <?php echo htmlspecialchars($voucher['description']); ?>
-                                                    </div>
-                                                <?php endif; ?>
-                                                <div class="voucher-item-footer">
-                                                    <span class="voucher-item-condition">
-                                                        <?php echo $voucher['condition'] ?? ''; ?>
-                                                    </span>
-                                                    <span class="voucher-item-savings <?php echo $voucher['can_use'] ? 'available' : 'unavailable'; ?>">
-                                                        <?php if ($voucher['can_use']): ?>
-                                                            <i class="fas fa-arrow-down"></i>
-                                                            Tiết kiệm: <?php echo $voucher['formatted_discount'] ?? ''; ?>
-                                                        <?php else: ?>
-                                                            <i class="fas fa-times-circle"></i>
-                                                            Không đủ điều kiện
-                                                        <?php endif; ?>
-                                                    </span>
-                                                </div>
-                                                <div style="font-size: 0.8rem; color: #9ca3af; margin-top: 8px;">
-                                                    <i class="fas fa-clock"></i>
-                                                    <?php echo $voucher['expires'] ?? ''; ?> • <?php echo $voucher['remaining'] ?? ''; ?>
-                                                </div>
+                                <div id="voucher-list" class="voucher-list">
+                                    <?php foreach ($available_vouchers as $voucher): ?>
+                                        <div class="voucher-item" onclick="selectVoucher('<?php echo htmlspecialchars($voucher['code'] ?? ''); ?>')">
+                                            <div class="voucher-item-code">
+                                                <?php echo htmlspecialchars($voucher['code'] ?? ''); ?>
                                             </div>
-                                        <?php endforeach; ?>
-                                    </div>
+                                            <div class="voucher-item-name">
+                                                <?php echo htmlspecialchars($voucher['name'] ?? ''); ?>
+                                            </div>
+                                            <?php if (isset($voucher['description']) && $voucher['description']): ?>
+                                                <div class="voucher-item-desc">
+                                                    <?php echo htmlspecialchars($voucher['description']); ?>
+                                                </div>
+                                            <?php endif; ?>
+                                        </div>
+                                    <?php endforeach; ?>
                                 </div>
                             <?php endif; ?>
                         <?php endif; ?>
                     </div>
                 </div>
-            </div>
 
-            <!-- Order Summary Sidebar -->
-            <div class="order-summary">
-                <div class="card fade-in">
-                    <div class="card-header">
+                <!-- Order Summary (moved to bottom) -->
+                <div class="section-card">
+                    <div class="section-header">
                         <i class="fas fa-receipt"></i>
                         <h3>Tóm tắt đơn hàng</h3>
                     </div>
                     
                     <div class="summary-item">
                         <span class="summary-label">
-                            <i class="fas fa-shopping-bag"></i>
                             Tạm tính (<?php echo count($checkout_items); ?> sản phẩm):
                         </span>
                         <span class="summary-value"><?php echo number_format($original_total); ?>đ</span>
@@ -1047,7 +1075,6 @@ $final_total = $total_amount + $shipping_fee;
                     <?php if ($voucher_discount > 0): ?>
                         <div class="summary-item">
                             <span class="summary-label">
-                                <i class="fas fa-ticket-alt"></i>
                                 Voucher <?php echo htmlspecialchars($applied_voucher['MAVOUCHER']); ?>:
                             </span>
                             <span class="summary-discount">-<?php echo number_format($voucher_discount); ?>đ</span>
@@ -1056,14 +1083,11 @@ $final_total = $total_amount + $shipping_fee;
                     
                     <div class="summary-item">
                         <span class="summary-label">
-                            <i class="fas fa-shipping-fast"></i>
                             Phí vận chuyển:
                         </span>
                         <span class="summary-value">
                             <?php if ($shipping_fee === 0): ?>
-                                <span style="color: #10b981; font-weight: 600;">
-                                    <i class="fas fa-gift"></i> Miễn phí
-                                </span>
+                                <span style="color: #28a745;">Miễn phí</span>
                             <?php else: ?>
                                 <?php echo number_format($shipping_fee); ?>đ
                             <?php endif; ?>
@@ -1072,7 +1096,6 @@ $final_total = $total_amount + $shipping_fee;
                     
                     <div class="summary-item">
                         <span class="summary-label summary-total">
-                            <i class="fas fa-money-check-alt"></i>
                             Tổng cộng:
                         </span>
                         <span class="summary-total"><?php echo number_format($final_total); ?>đ</span>
@@ -1082,26 +1105,6 @@ $final_total = $total_amount + $shipping_fee;
                         <i class="fas fa-credit-card"></i>
                         Xác nhận đặt hàng
                     </button>
-                    
-                    <!-- Payment Info -->
-                    <div style="margin-top: 20px; padding: 15px; background: #f8fafc; border-radius: 10px; font-size: 0.9rem; color: #64748b;">
-                        <div style="display: flex; align-items: center; margin-bottom: 10px;">
-                            <i class="fas fa-shield-alt" style="color: #10b981; margin-right: 8px;"></i>
-                            <strong>Thanh toán an toàn & bảo mật</strong>
-                        </div>
-                        <div style="margin-bottom: 5px;">
-                            <i class="fas fa-check-circle" style="color: #10b981; margin-right: 5px;"></i>
-                            Thông tin được mã hóa SSL
-                        </div>
-                        <div style="margin-bottom: 5px;">
-                            <i class="fas fa-check-circle" style="color: #10b981; margin-right: 5px;"></i>
-                            Hỗ trợ đổi trả trong 7 ngày
-                        </div>
-                        <div>
-                            <i class="fas fa-check-circle" style="color: #10b981; margin-right: 5px;"></i>
-                            Giao hàng toàn quốc
-                        </div>
-                    </div>
                 </div>
             </div>
         </div>
@@ -1111,25 +1114,19 @@ $final_total = $total_amount + $shipping_fee;
         // Toggle voucher list visibility
         function toggleVoucherList() {
             const voucherList = document.getElementById('voucher-list');
-            const toggle = document.querySelector('.available-vouchers-toggle');
+            const toggle = document.querySelector('.available-vouchers');
             
             if (voucherList.style.display === 'none' || voucherList.style.display === '') {
                 voucherList.style.display = 'block';
-                voucherList.classList.add('fade-in');
                 toggle.innerHTML = '<i class="fas fa-gift"></i> Ẩn danh sách voucher';
             } else {
                 voucherList.style.display = 'none';
-                toggle.innerHTML = '<i class="fas fa-gift"></i> Xem voucher có thể sử dụng (<?php echo count($available_vouchers); ?> voucher)';
+                toggle.innerHTML = '<i class="fas fa-gift"></i> Chọn voucher có sẵn (<?php echo count($available_vouchers); ?> voucher)';
             }
         }
 
         // Select voucher from list
-        function selectVoucher(code, canUse) {
-            if (!canUse) {
-                showAlert('Voucher này không đủ điều kiện sử dụng cho đơn hàng hiện tại', 'error');
-                return;
-            }
-            
+        function selectVoucher(code) {
             const voucherInput = document.querySelector('input[name="voucher_code"]');
             if (voucherInput) {
                 voucherInput.value = code;
@@ -1144,8 +1141,23 @@ $final_total = $total_amount + $shipping_fee;
                 
                 // Submit form
                 setTimeout(() => {
-                    applyButton.click();
-                }, 500);
+                    // Add selected items to voucher form
+                    const selectedItems = <?php echo json_encode(array_column($checkout_items, 'key')); ?>;
+                    selectedItems.forEach(key => {
+                        const hiddenInput = document.createElement('input');
+                        hiddenInput.type = 'hidden';
+                        hiddenInput.name = 'selected_items[]';
+                        hiddenInput.value = key;
+                        voucherForm.appendChild(hiddenInput);
+                    });
+                    
+                    const applyInput = document.createElement('input');
+                    applyInput.type = 'hidden';
+                    applyInput.name = 'apply_voucher';
+                    applyInput.value = '1';
+                    voucherForm.appendChild(applyInput);
+                    voucherForm.submit();
+                }, 300);
             }
         }
 
@@ -1155,35 +1167,44 @@ $final_total = $total_amount + $shipping_fee;
             const button = document.querySelector('.checkout-btn');
             
             // Validate form
-            const fullname = form.querySelector('input[name="fullname"]').value.trim();
-            const phone = form.querySelector('input[name="phone"]').value.trim();
-            const address = form.querySelector('input[name="address"]').value.trim();
             const paymentMethod = form.querySelector('select[name="payment_method"]').value;
             
-            if (!fullname || !phone || !address || !paymentMethod) {
-                showAlert('Vui lòng điền đầy đủ thông tin bắt buộc!', 'error');
+            if (!paymentMethod) {
+                alert('Vui lòng chọn phương thức thanh toán!');
                 return;
             }
             
-            // Validate phone number
-            const phoneRegex = /^[0-9]{10,11}$/;
-            if (!phoneRegex.test(phone)) {
-                showAlert('Số điện thoại không hợp lệ! Vui lòng nhập 10-11 chữ số.', 'error');
+            // Check if customer info is complete
+            const fullname = form.querySelector('input[name="fullname"]').value.trim();
+            const phone = form.querySelector('input[name="phone"]').value.trim();
+            const address = form.querySelector('input[name="address"]').value.trim();
+            
+            if (!fullname || !phone || !address) {
+                alert('Thông tin cá nhân chưa đầy đủ! Vui lòng cập nhật thông tin trong trang Profile trước khi đặt hàng.');
                 return;
             }
             
             // Confirm order
             const totalAmount = <?php echo $final_total; ?>;
-            const confirmMessage = `Xác nhận đặt hàng với tổng tiền ${totalAmount.toLocaleString('vi-VN')}đ?\n\nThông tin giao hàng:\n• Họ tên: ${fullname}\n• SĐT: ${phone}\n• Địa chỉ: ${address}`;
+            const confirmMessage = `Xác nhận đặt hàng với tổng tiền ${totalAmount.toLocaleString('vi-VN')}đ?`;
             
             if (!confirm(confirmMessage)) {
                 return;
             }
             
             // Add loading state
-            button.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Đang xử lý đơn hàng...';
+            button.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Đang xử lý...';
             button.disabled = true;
-            button.classList.add('loading');
+            
+            // Add selected items to form (only when submitting order)
+            const selectedItems = <?php echo json_encode(array_column($checkout_items, 'key')); ?>;
+            selectedItems.forEach(key => {
+                const hiddenInput = document.createElement('input');
+                hiddenInput.type = 'hidden';
+                hiddenInput.name = 'selected_items[]';
+                hiddenInput.value = key;
+                form.appendChild(hiddenInput);
+            });
             
             // Add place_order input and submit
             const placeOrderInput = document.createElement('input');
@@ -1192,29 +1213,51 @@ $final_total = $total_amount + $shipping_fee;
             placeOrderInput.value = '1';
             form.appendChild(placeOrderInput);
             
+            // Xóa checkout state trước khi submit
+            sessionStorage.removeItem('checkout_state');
+            
             form.submit();
-        }
-
-        // Show alert function
-        function showAlert(message, type = 'info') {
-            const alertDiv = document.createElement('div');
-            alertDiv.className = `alert alert-${type === 'error' ? 'danger' : 'success'} fade-in`;
-            alertDiv.innerHTML = `
-                <i class="fas fa-${type === 'error' ? 'exclamation-triangle' : 'check-circle'}"></i>
-                ${message}
-            `;
-            
-            const container = document.querySelector('.checkout-container');
-            container.insertBefore(alertDiv, container.querySelector('.checkout-layout'));
-            
-            // Auto remove after 5 seconds
-            setTimeout(() => {
-                alertDiv.remove();
-            }, 5000);
         }
 
         // Enhanced form interactions
         document.addEventListener('DOMContentLoaded', function() {
+            // Khôi phục checkout state nếu có
+            const urlParams = new URLSearchParams(window.location.search);
+            if (urlParams.get('restored') === '1') {
+                // Hiển thị thông báo khôi phục thành công
+                const notification = document.createElement('div');
+                notification.className = 'alert alert-success';
+                notification.innerHTML = '<i class="fas fa-check-circle"></i> Đã khôi phục thông tin checkout thành công!';
+                document.querySelector('.checkout-container').insertBefore(notification, document.querySelector('.checkout-header').nextSibling);
+                
+                // Tự động ẩn thông báo sau 5 giây
+                setTimeout(() => {
+                    notification.remove();
+                }, 5000);
+            }
+            
+            // Lưu checkout state trước khi chuyển trang
+            const editProfileBtn = document.querySelector('.edit-profile-btn');
+            if (editProfileBtn) {
+                editProfileBtn.addEventListener('click', function(e) {
+                    e.preventDefault();
+                    
+                    // Thu thập dữ liệu checkout hiện tại (chỉ lưu voucher và form data, không lưu selected_items)
+                    const checkoutData = {
+                        payment_method: document.querySelector('select[name="payment_method"]').value,
+                        notes: document.querySelector('input[name="notes"]').value,
+                        voucher_code: document.querySelector('input[name="voucher_code"]') ? document.querySelector('input[name="voucher_code"]').value : '',
+                        timestamp: Date.now()
+                    };
+                    
+                    // Lưu vào sessionStorage
+                    sessionStorage.setItem('checkout_state', JSON.stringify(checkoutData));
+                    
+                    // Chuyển đến trang profile
+                    window.location.href = this.href;
+                });
+            }
+            
             // Auto uppercase voucher input
             const voucherInput = document.querySelector('input[name="voucher_code"]');
             if (voucherInput) {
@@ -1234,37 +1277,74 @@ $final_total = $total_amount + $shipping_fee;
                 });
             }
             
+            // Handle voucher form submission
+            const voucherForm = document.getElementById('voucherForm');
+            if (voucherForm) {
+                voucherForm.addEventListener('submit', function(e) {
+                    e.preventDefault();
+                    
+                    // Add selected items to form
+                    const selectedItems = <?php echo json_encode(array_column($checkout_items, 'key')); ?>;
+                    selectedItems.forEach(key => {
+                        const hiddenInput = document.createElement('input');
+                        hiddenInput.type = 'hidden';
+                        hiddenInput.name = 'selected_items[]';
+                        hiddenInput.value = key;
+                        this.appendChild(hiddenInput);
+                    });
+                    
+                    // Add apply voucher flag
+                    const applyInput = document.createElement('input');
+                    applyInput.type = 'hidden';
+                    applyInput.name = 'apply_voucher';
+                    applyInput.value = '1';
+                    this.appendChild(applyInput);
+                    
+                    // Submit form
+                    this.submit();
+                });
+            }
+            
+            // Handle remove voucher forms
+            const removeVoucherForms = document.querySelectorAll('form[style*="inline"]');
+            removeVoucherForms.forEach(form => {
+                if (form.querySelector('button[name="remove_voucher"]')) {
+                    form.addEventListener('submit', function(e) {
+                        e.preventDefault();
+                        
+                        // Add selected items to form
+                        const selectedItems = <?php echo json_encode(array_column($checkout_items, 'key')); ?>;
+                        selectedItems.forEach(key => {
+                            const hiddenInput = document.createElement('input');
+                            hiddenInput.type = 'hidden';
+                            hiddenInput.name = 'selected_items[]';
+                            hiddenInput.value = key;
+                            this.appendChild(hiddenInput);
+                        });
+                        
+                        // Submit form
+                        this.submit();
+                    });
+                }
+            });
+            
             // Form validation on input
-            const requiredInputs = document.querySelectorAll('input[required], select[required]');
+            const requiredInputs = document.querySelectorAll('select[required]');
             requiredInputs.forEach(input => {
                 input.addEventListener('blur', function() {
                     if (!this.value.trim()) {
-                        this.style.borderColor = '#dc2626';
+                        this.style.borderColor = '#dc3545';
                     } else {
-                        this.style.borderColor = '#10b981';
+                        this.style.borderColor = '#28a745';
                     }
                 });
                 
-                input.addEventListener('input', function() {
+                input.addEventListener('change', function() {
                     if (this.value.trim()) {
-                        this.style.borderColor = '#10b981';
+                        this.style.borderColor = '#28a745';
                     }
                 });
             });
-            
-            // Phone number formatting
-            const phoneInput = document.querySelector('input[name="phone"]');
-            if (phoneInput) {
-                phoneInput.addEventListener('input', function() {
-                    // Remove non-digits
-                    this.value = this.value.replace(/\D/g, '');
-                    
-                    // Limit to 11 digits
-                    if (this.value.length > 11) {
-                        this.value = this.value.substring(0, 11);
-                    }
-                });
-            }
         });
 
         // Prevent double submission

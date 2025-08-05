@@ -84,6 +84,76 @@ $voucherStmt = $conn->prepare("
 $voucherStmt->execute();
 $userVouchers = $voucherStmt->fetchAll(PDO::FETCH_ASSOC);
 
+// Tính membership level dựa trên tổng chi tiêu
+$totalSpent = array_sum(array_column($orders, 'TONGTIEN'));
+
+function getMembershipLevel($totalSpent) {
+    if ($totalSpent >= 20000000) {
+        return [
+            'level' => 'Kim cương',
+            'icon' => 'bi-gem',
+            'color' => 'linear-gradient(135deg,#7de2fc 20%,#b9b6e5 60%,#e6c2f7 100%)',
+            'textColor' => '#224168',
+            'discount' => 15,
+            'benefits' => [
+                'Giảm giá 15% mọi đơn hàng',
+                'Freeship toàn quốc không giới hạn',
+                'Quà sinh nhật VIP + voucher 1.000.000đ',
+                'Ưu tiên hỗ trợ riêng, mời sự kiện VIP'
+            ],
+            'nextLevel' => null,
+            'amountToNext' => 0
+        ];
+    } elseif ($totalSpent >= 10000000) {
+        return [
+            'level' => 'Vàng',
+            'icon' => 'bi-award-fill',
+            'color' => 'linear-gradient(135deg,#fffbe8 8%,#ffe8a6 43%,#e0bb7c 100%)',
+            'textColor' => '#856200',
+            'discount' => 10,
+            'benefits' => [
+                'Giảm giá 10% mọi đơn hàng',
+                'Freeship 10 đơn/tháng',
+                'Quà sinh nhật đặc biệt',
+                'Ưu tiên hỗ trợ khách hàng'
+            ],
+            'nextLevel' => 'Kim cương',
+            'amountToNext' => 20000000 - $totalSpent
+        ];
+    } elseif ($totalSpent >= 5000000) {
+        return [
+            'level' => 'Bạc',
+            'icon' => 'bi-trophy',
+            'color' => 'linear-gradient(120deg,#f7fafd 10%,#cfd9df 100%)',
+            'textColor' => '#676f7b',
+            'discount' => 5,
+            'benefits' => [
+                'Giảm giá 5% mọi đơn hàng',
+                'Freeship 3 đơn/tháng',
+                'Voucher sinh nhật 100.000đ'
+            ],
+            'nextLevel' => 'Vàng',
+            'amountToNext' => 10000000 - $totalSpent
+        ];
+    } else {
+        return [
+            'level' => 'Thành viên',
+            'icon' => 'bi-person',
+            'color' => 'linear-gradient(120deg,#f7fafd 70%,#f2f3f4 100%)',
+            'textColor' => '#818ba1',
+            'discount' => 0,
+            'benefits' => [
+                'Tích điểm đổi ưu đãi',
+                'Tham gia các chương trình khuyến mãi thường niên'
+            ],
+            'nextLevel' => 'Bạc',
+            'amountToNext' => 5000000 - $totalSpent
+        ];
+    }
+}
+
+$membershipData = getMembershipLevel($totalSpent);
+
 // Lấy tab hiện tại
 $currentTab = $_GET['tab'] ?? 'profile';
 ?>
@@ -96,6 +166,7 @@ $currentTab = $_GET['tab'] ?? 'profile';
     <title>Tài khoản của tôi - MENSTA</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css">
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css" rel="stylesheet">
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
         body { font-family: 'Inter', sans-serif; background: #f8f9fc; line-height: 1.6; }
@@ -233,6 +304,127 @@ $currentTab = $_GET['tab'] ?? 'profile';
         input:checked + .slider { background-color: #3498db; }
         input:checked + .slider:before { transform: translateX(26px); }
         
+        /* Membership Styles */
+        .membership-container { max-width: 800px; margin: 0 auto; }
+        .current-level-card { 
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            border-radius: 15px;
+            text-align: center;
+            margin-bottom: 30px;
+            box-shadow: 0 10px 30px rgba(102, 126, 234, 0.3);
+        }
+        .level-icon { 
+            font-size: 4rem; 
+            margin-bottom: 15px;
+            padding: 20px;
+            border-radius: 50%;
+            display: inline-block;
+            background: rgba(255,255,255,0.2);
+            backdrop-filter: blur(10px);
+        }
+        .level-name { font-size: 2rem; font-weight: 700; margin-bottom: 10px; }
+        .level-spending { font-size: 1.2rem; opacity: 0.9; margin-bottom: 20px; }
+        .level-progress { 
+            background: rgba(255,255,255,0.2); 
+            height: 8px; 
+            border-radius: 4px; 
+            margin: 20px 0;
+            overflow: hidden;
+        }
+        .level-progress-bar { 
+            height: 100%; 
+            background: rgba(255,255,255,0.8);
+            border-radius: 4px;
+            transition: width 0.5s ease;
+        }
+        .next-level-info { font-size: 1rem; opacity: 0.9; }
+        
+        .benefits-grid { 
+            display: grid; 
+            grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); 
+            gap: 20px; 
+            margin-bottom: 30px; 
+        }
+        .benefit-card { 
+            background: white; 
+            padding: 25px; 
+            border-radius: 12px; 
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
+            border-left: 4px solid #3498db;
+        }
+        .benefit-card h4 { color: #2c3e50; margin-bottom: 15px; font-size: 1.2rem; }
+        .benefit-list { list-style: none; }
+        .benefit-list li { 
+            padding: 8px 0; 
+            color: #555; 
+            position: relative;
+            padding-left: 25px;
+        }
+        .benefit-list li:before { 
+            content: "✓"; 
+            color: #27ae60; 
+            font-weight: bold; 
+            position: absolute; 
+            left: 0; 
+        }
+        
+        .all-levels { 
+            background: white; 
+            padding: 30px; 
+            border-radius: 12px; 
+            box-shadow: 0 4px 15px rgba(0,0,0,0.1); 
+        }
+        .all-levels h3 { 
+            text-align: center; 
+            margin-bottom: 30px; 
+            color: #2c3e50; 
+            font-size: 1.5rem; 
+        }
+        .levels-grid { 
+            display: grid; 
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); 
+            gap: 20px; 
+        }
+        .level-card { 
+            padding: 20px; 
+            border-radius: 12px; 
+            text-align: center; 
+            border: 2px solid #e9ecef;
+            transition: all 0.3s ease;
+        }
+        .level-card:hover { 
+            transform: translateY(-5px); 
+            box-shadow: 0 8px 25px rgba(0,0,0,0.15); 
+        }
+        .level-card.current { 
+            border-color: #3498db; 
+            background: linear-gradient(135deg, #f8f9ff 0%, #e3f2fd 100%);
+        }
+        .level-card-icon { 
+            font-size: 2.5rem; 
+            margin-bottom: 15px; 
+            padding: 15px;
+            border-radius: 50%;
+            display: inline-block;
+        }
+        .level-card-name { 
+            font-size: 1.3rem; 
+            font-weight: 700; 
+            margin-bottom: 10px; 
+        }
+        .level-card-requirement { 
+            font-size: 0.9rem; 
+            color: #666; 
+            margin-bottom: 15px; 
+        }
+        .level-card-benefits { 
+            font-size: 0.85rem; 
+            color: #555; 
+            text-align: left;
+        }
+        
         @media (max-width: 768px) {
             .container { padding: 15px; }
             .tab-nav { flex-direction: column; }
@@ -241,6 +433,10 @@ $currentTab = $_GET['tab'] ?? 'profile';
             .order-info { grid-template-columns: 1fr; }
             .stats-grid { grid-template-columns: 1fr; }
             .voucher-grid { grid-template-columns: 1fr; }
+            .levels-grid { grid-template-columns: 1fr; }
+            .benefits-grid { grid-template-columns: 1fr; }
+            .level-icon { font-size: 3rem; }
+            .level-name { font-size: 1.5rem; }
         }
     </style>
 </head>
@@ -269,6 +465,9 @@ $currentTab = $_GET['tab'] ?? 'profile';
                 </button>
                 <button class="tab-btn <?php echo $currentTab === 'vouchers' ? 'active' : ''; ?>" onclick="switchTab('vouchers')">
                     <i class="fas fa-ticket-alt"></i> Voucher của tôi
+                </button>
+                <button class="tab-btn <?php echo $currentTab === 'membership' ? 'active' : ''; ?>" onclick="switchTab('membership')">
+                    <i class="fas fa-crown"></i> Thành viên VIP
                 </button>
                 <button class="tab-btn <?php echo $currentTab === 'settings' ? 'active' : ''; ?>" onclick="switchTab('settings')">
                     <i class="fas fa-cog"></i> Cài đặt
@@ -617,6 +816,142 @@ case 'Đang giao hàng': echo 'status-shipping'; break;
                                     <input type="checkbox">
                                     <span class="slider"></span>
                                 </label>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tab Membership -->
+                <div class="tab-pane <?php echo $currentTab === 'membership' ? 'active' : ''; ?>" id="membership-tab">
+                    <div class="membership-container">
+                        <!-- Current Level Card -->
+                        <div class="current-level-card">
+                            <div class="level-icon" style="background: <?php echo $membershipData['color']; ?>; color: <?php echo $membershipData['textColor']; ?>;">
+                                <i class="<?php echo $membershipData['icon']; ?>"></i>
+                            </div>
+                            <div class="level-name"><?php echo $membershipData['level']; ?></div>
+                            <div class="level-spending">
+                                Tổng chi tiêu: <strong><?php echo number_format($totalSpent); ?>đ</strong>
+                            </div>
+                            
+                            <?php if ($membershipData['nextLevel']): ?>
+                                <div class="level-progress">
+                                    <?php 
+                                    $currentLevelMin = 0;
+                                    if ($membershipData['level'] === 'Thành viên') $currentLevelMin = 0;
+                                    elseif ($membershipData['level'] === 'Bạc') $currentLevelMin = 5000000;
+                                    elseif ($membershipData['level'] === 'Vàng') $currentLevelMin = 10000000;
+                                    
+                                    $nextLevelMin = $currentLevelMin + $membershipData['amountToNext'];
+                                    $progress = (($totalSpent - $currentLevelMin) / ($nextLevelMin - $currentLevelMin)) * 100;
+                                    ?>
+                                    <div class="level-progress-bar" style="width: <?php echo min(100, max(0, $progress)); ?>%"></div>
+                                </div>
+                                <div class="next-level-info">
+                                    Còn <strong><?php echo number_format($membershipData['amountToNext']); ?>đ</strong> 
+                                    để lên hạng <strong><?php echo $membershipData['nextLevel']; ?></strong>
+                                </div>
+                            <?php else: ?>
+                                <div class="next-level-info">
+                                    🎉 Bạn đã đạt hạng cao nhất!
+                                </div>
+                            <?php endif; ?>
+                        </div>
+
+                        <!-- Current Benefits -->
+                        <div class="benefits-grid">
+                            <div class="benefit-card">
+                                <h4><i class="fas fa-gift"></i> Quyền lợi hiện tại</h4>
+                                <ul class="benefit-list">
+                                    <?php foreach ($membershipData['benefits'] as $benefit): ?>
+                                        <li><?php echo $benefit; ?></li>
+                                    <?php endforeach; ?>
+                                </ul>
+                            </div>
+                            
+                            <div class="benefit-card">
+                                <h4><i class="fas fa-chart-line"></i> Thống kê của bạn</h4>
+                                <ul class="benefit-list">
+                                    <li>Tổng đơn hàng: <strong><?php echo count($orders); ?></strong></li>
+                                    <li>Đơn hoàn thành: <strong><?php echo count(array_filter($orders, fn($o) => $o['TRANGTHAI'] === 'Đã hoàn thành')); ?></strong></li>
+                                    <li>Voucher có: <strong><?php echo count($userVouchers); ?></strong></li>
+                                    <li>Hạng thành viên: <strong><?php echo $membershipData['level']; ?></strong></li>
+                                </ul>
+                            </div>
+                        </div>
+
+                        <!-- All Levels -->
+                        <div class="all-levels">
+                            <h3><i class="fas fa-layer-group"></i> Tất cả hạng thành viên</h3>
+                            <div class="levels-grid">
+                                <!-- Kim cương -->
+                                <div class="level-card <?php echo $membershipData['level'] === 'Kim cương' ? 'current' : ''; ?>">
+                                    <div class="level-card-icon" style="background: linear-gradient(135deg,#7de2fc 20%,#b9b6e5 60%,#e6c2f7 100%); color: #224168;">
+                                        <i class="bi bi-gem"></i>
+                                    </div>
+                                    <div class="level-card-name" style="color: #224168;">KIM CƯƠNG</div>
+                                    <div class="level-card-requirement">Từ 20.000.000đ</div>
+                                    <div class="level-card-benefits">
+                                        • Giảm giá 15% mọi đơn hàng<br>
+                                        • Freeship toàn quốc<br>
+                                        • Quà sinh nhật VIP<br>
+                                        • Ưu tiên hỗ trợ riêng
+                                    </div>
+                                </div>
+
+                                <!-- Vàng -->
+                                <div class="level-card <?php echo $membershipData['level'] === 'Vàng' ? 'current' : ''; ?>">
+                                    <div class="level-card-icon" style="background: linear-gradient(135deg,#fffbe8 8%,#ffe8a6 43%,#e0bb7c 100%); color: #856200;">
+                                        <i class="bi bi-award-fill"></i>
+                                    </div>
+                                    <div class="level-card-name" style="color: #856200;">VÀNG</div>
+                                    <div class="level-card-requirement">Từ 10.000.000đ</div>
+                                    <div class="level-card-benefits">
+                                        • Giảm giá 10% mọi đơn hàng<br>
+                                        • Freeship 10 đơn/tháng<br>
+                                        • Quà sinh nhật đặc biệt<br>
+                                        • Ưu tiên hỗ trợ
+                                    </div>
+                                </div>
+
+                                <!-- Bạc -->
+                                <div class="level-card <?php echo $membershipData['level'] === 'Bạc' ? 'current' : ''; ?>">
+                                    <div class="level-card-icon" style="background: linear-gradient(120deg,#f7fafd 10%,#cfd9df 100%); color: #676f7b;">
+                                        <i class="bi bi-trophy"></i>
+                                    </div>
+                                    <div class="level-card-name" style="color: #676f7b;">BẠC</div>
+                                    <div class="level-card-requirement">Từ 5.000.000đ</div>
+                                    <div class="level-card-benefits">
+                                        • Giảm giá 5% mọi đơn hàng<br>
+                                        • Freeship 3 đơn/tháng<br>
+                                        • Voucher sinh nhật 100.000đ
+                                    </div>
+                                </div>
+
+                                <!-- Thành viên -->
+                                <div class="level-card <?php echo $membershipData['level'] === 'Thành viên' ? 'current' : ''; ?>">
+                                    <div class="level-card-icon" style="background: linear-gradient(120deg,#f7fafd 70%,#f2f3f4 100%); color: #818ba1;">
+                                        <i class="bi bi-person"></i>
+                                    </div>
+                                    <div class="level-card-name" style="color: #818ba1;">THÀNH VIÊN</div>
+                                    <div class="level-card-requirement">Dưới 5.000.000đ</div>
+                                    <div class="level-card-benefits">
+                                        • Tích điểm đổi ưu đãi<br>
+                                        • Tham gia khuyến mãi<br>
+                                        • Hỗ trợ khách hàng
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div style="text-align: center; margin-top: 30px; padding: 20px; background: #f8f9fc; border-radius: 10px;">
+                                <p style="color: #666; margin-bottom: 15px;">
+                                    <i class="fas fa-info-circle"></i>
+                                    <strong>Hạng thẻ được cập nhật tự động</strong> dựa trên tổng tiền mua sắm.<br>
+                                    Ưu đãi được áp dụng trực tiếp khi đặt hàng.
+                                </p>
+                                <a href="/web_3/view/membership.php" class="btn btn-primary" style="text-decoration: none;">
+                                    <i class="fas fa-external-link-alt"></i> Xem chi tiết hệ thống thành viên
+                                </a>
                             </div>
                         </div>
                     </div>
@@ -996,6 +1331,8 @@ case 'Đang giao hàng': echo 'status-shipping'; break;
                 setTimeout(() => alertBox.remove(), 500);
             }, 3000);
         }
+        
     </script>
+    <script src="js/checkout-helper.js"></script>
 </body>
 </html>

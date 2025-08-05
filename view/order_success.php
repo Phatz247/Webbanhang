@@ -268,5 +268,13 @@ $order_items = $stmt->fetchAll(PDO::FETCH_ASSOC);
             </div>
         </div>
     </div>
+
+    <script>
+        // Xóa checkout state từ sessionStorage khi đặt hàng thành công
+        document.addEventListener('DOMContentLoaded', function() {
+            // Xóa checkout state để không hiển thị thông báo "đơn hàng đang chờ thanh toán"
+            sessionStorage.removeItem('checkout_state');
+        });
+    </script>
 </body>
 </html>

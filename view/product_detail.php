@@ -171,6 +171,43 @@ function getPriceInfo($originalPrice, $saleData) {
     .color-option { cursor:pointer; border:2px solid transparent; border-radius:6px; padding:8px; background:#f8f9fa; text-align:center; }
     .color-option.selected { border-color:#dc3545; background:#fff5f5; }
     .color-option img { width:50px; height:50px; object-fit:cover; border-radius:4px; margin-bottom:4px; }
+    
+    /* Styles cho khối mô tả sản phẩm */
+    .product-description {
+      margin-top: 30px;
+      padding: 20px;
+      background: #f8f9fa;
+      border-radius: 10px;
+      border-left: 4px solid #27ae60;
+    }
+    .product-description h3 {
+      color: #27ae60;
+      font-size: 18px;
+      margin-bottom: 15px;
+      font-weight: 600;
+    }
+    .product-description p {
+      color: #555;
+      line-height: 1.6;
+      margin-bottom: 10px;
+    }
+    .product-description .no-description {
+      color: #888;
+      font-style: italic;
+    }
+    
+    /* Responsive cho mobile */
+    @media (max-width: 768px) {
+      .product-section { flex-direction: column; gap: 20px; }
+      .main-container { padding: 0 15px; }
+      .product-description {
+        margin-top: 20px;
+        padding: 15px;
+      }
+      .product-description h3 {
+        font-size: 16px;
+      }
+    }
   </style>
 </head>
 <body>
@@ -263,6 +300,16 @@ function getPriceInfo($originalPrice, $saleData) {
             </button>
           </div>
         </form>
+
+        <!-- Khối mô tả sản phẩm -->
+        <div class="product-description">
+          <h3> Mô tả sản phẩm</h3>
+          <?php if (!empty($sp['MOTA']) && trim($sp['MOTA'])): ?>
+            <p><?= nl2br(htmlspecialchars($sp['MOTA'])) ?></p>
+          <?php else: ?>
+            <p class="no-description">Chưa có mô tả chi tiết cho sản phẩm này.</p>
+          <?php endif; ?>
+        </div>
       </div>
     </div>
   </div>

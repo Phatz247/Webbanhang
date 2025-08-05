@@ -20,7 +20,7 @@ $edit_account = [];
 if (isset($_GET['edit_acc'])) {
     if ($_GET['edit_acc'] === 'TK001') {
         $_SESSION['alert_success'] = "❌ Không thể sửa tài khoản admin!";
-        header("Location: taikhoan.php");
+        header("Location: /web_3/controller/account_management.php");
         exit;
     }
     $edit_mode = true;
@@ -62,10 +62,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
                     $matk = 'TK001';
                 }
                 $hash = password_hash($matkhau, PASSWORD_DEFAULT);
+
+                // Nếu chưa có tài khoản nào thì vai trò là admin
+                $stmt = $conn->query("SELECT COUNT(*) FROM taikhoan");
+                $total_acc = $stmt->fetchColumn();
+                if ($total_acc == 0) {
+                    $vaitro = 'admin';
+                }
+
                 $stmt = $conn->prepare("INSERT INTO taikhoan (MATK, TENDANGNHAP, MATKHAU, MAKH, VAITRO) VALUES (?, ?, ?, ?, ?)");
                 $stmt->execute([$matk, $tendn, $hash, $makh, $vaitro]);
                 $_SESSION['alert_success'] = "✔️ Tạo tài khoản thành công!";
-                header("Location: taikhoan.php");
+header("Location: /web_3/controller/account_management.php");
                 exit;
             }
         }
@@ -75,7 +83,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $matk = $_POST['matk'];
         if ($matk === 'TK001') {
             $_SESSION['alert_success'] = "❌ Không thể sửa tài khoản admin!";
-            header("Location: taikhoan.php");
+            header("Location: /web_3/controller/account_management.php");
             exit;
         }
         $tendn = $_POST['tendn'];
@@ -101,7 +109,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
             $stmt = $conn->prepare($sql);
             $stmt->execute($params);
             $_SESSION['alert_success'] = "✔️ Đã cập nhật tài khoản!";
-            header("Location: taikhoan.php");
+            header("Location: /web_3/controller/account_management.php");
             exit;
         }
     }
@@ -112,17 +120,19 @@ if (isset($_GET['delete_acc'])) {
     $matk = $_GET['delete_acc'];
     if ($matk === 'TK001') {
         $_SESSION['alert_success'] = "❌ Không thể xóa tài khoản admin!";
-        header("Location: taikhoan.php");
+        header("Location: /web_3/controller/account_management.php");
         exit;
     }
     $stmt = $conn->prepare("DELETE FROM taikhoan WHERE MATK = ?");
     $stmt->execute([$matk]);
     $_SESSION['alert_success'] = "✔️ Đã xoá tài khoản!";
-    header("Location: taikhoan.php");
+    header("Location: /web_3/controller/account_management.php");
     exit;
 }
-?>
 
+// Include menu/sidebar
+include_once __DIR__ . '/../view/upload/header_admin.php';
+?>
 <!DOCTYPE html>
 <html lang="vi">
 <head>
@@ -141,7 +151,7 @@ if (isset($_GET['delete_acc'])) {
         h4 { font-size: 1.6rem; font-weight: 600;}
         h5 { font-size: 1.2rem; font-weight: 500;}
         .alert-fixed { position: fixed; top: 20px; right: 40px; min-width: 240px; z-index: 9999; font-size: 16px; padding: 12px 18px; border-radius: 8px; box-shadow: 0 4px 20px rgba(0,0,0,0.11);}
-        .btn-action { min-width: 80px; }
+.btn-action { min-width: 80px; }
         .d-action { display: flex; gap: 12px; justify-content: center;}
         .badge { font-size: .98em; padding:6px 14px; }
         .form-label { font-weight: 500; }
@@ -193,17 +203,20 @@ if (isset($_GET['delete_acc'])) {
         </div>
         <div class="col-lg-2 col-md-6">
           <label class="form-label">Vai trò</label>
-          <select name="vaitro" class="form-select" required>
+          <select name="vaitro" class="form-select" required <?= (count($accounts) == 0 && !$edit_mode) ? 'disabled' : '' ?>>
             <option value="user" <?= (isset($edit_account['VAITRO']) && $edit_account['VAITRO']=='user')?'selected':''; ?>>User</option>
-            <option value="admin" <?= (isset($edit_account['VAITRO']) && $edit_account['VAITRO']=='admin')?'selected':''; ?>>Admin</option>
+<option value="admin" <?= (isset($edit_account['VAITRO']) && $edit_account['VAITRO']=='admin')?'selected':''; ?>>Admin</option>
           </select>
+          <?php if (count($accounts) == 0 && !$edit_mode): ?>
+            <div class="form-text text-danger">Tài khoản đầu tiên sẽ là Admin</div>
+          <?php endif; ?>
         </div>
-        <div class="col-lg-1 col-12 text-end">
+        <div class="col-lg-1 col-12 text-end d-flex flex-column align-items-end gap-2">
           <?php if ($edit_mode): ?>
-            <button class="btn btn-warning btn-action" type="submit" name="update_account"><i class="bi bi-pencil"></i> Cập nhật</button>
-            <a href="taikhoan.php" class="btn btn-secondary btn-action ms-2">Hủy</a>
+            <button class="btn btn-warning btn-action w-100 mb-2" type="submit" name="update_account"><i class="bi bi-pencil"></i> Cập nhật</button>
+            <a href="/web_3/controller/account_management.php" class="btn btn-secondary btn-action w-100">Hủy</a>
           <?php else: ?>
-            <button class="btn btn-primary btn-action" type="submit" name="add_account"><i class="bi bi-person-plus"></i> Thêm</button>
+            <button class="btn btn-primary btn-action w-100" type="submit" name="add_account"><i class="bi bi-person-plus"></i> Thêm</button>
           <?php endif; ?>
         </div>
       </form>
@@ -242,8 +255,8 @@ if (isset($_GET['delete_acc'])) {
               <td class="text-center">
                 <div class="d-action">
                 <?php if ($acc['MATK'] !== 'TK001'): ?>
-                  <a class="btn btn-sm btn-warning btn-action" href="?edit_acc=<?= $acc['MATK'] ?>"><i class="bi bi-pencil"></i> Sửa</a>
-                  <a class="btn btn-sm btn-danger btn-action" href="?delete_acc=<?= $acc['MATK'] ?>" onclick="return confirm('Xoá tài khoản này?')"><i class="bi bi-trash"></i> Xóa</a>
+                  <a class="btn btn-sm btn-warning btn-action" href="/web_3/controller/account_management.php?edit_acc=<?= $acc['MATK'] ?>"><i class="bi bi-pencil"></i> Sửa</a>
+                  <a class="btn btn-sm btn-danger btn-action" href="/web_3/controller/account_management.php?delete_acc=<?= $acc['MATK'] ?>" onclick="return confirm('Xoá tài khoản này?')"><i class="bi bi-trash"></i> Xóa</a>
                 <?php else: ?>
                   <span class="text-muted fst-italic">Admin mặc định</span>
                 <?php endif; ?>
@@ -251,7 +264,7 @@ if (isset($_GET['delete_acc'])) {
               </td>
             </tr>
             <?php endforeach; ?>
-            <?php if (empty($accounts)): ?>
+<?php if (empty($accounts)): ?>
             <tr>
               <td colspan="5" class="text-center text-muted">Chưa có tài khoản nào</td>
             </tr>

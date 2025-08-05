@@ -44,10 +44,13 @@ switch($section) {
         include __DIR__ . '/../controller/order_management.php';
         break;
     case 'thethanhvien':
-        include __DIR__ . '/../controller/membercard_management.php';
+        include __DIR__ . '/../controller/membercard.php';
         break;
     case 'doanhthu':
         include __DIR__ . '/../controller/revenue_management.php';
+        break;
+    case 'doanhthu':
+        include __DIR__ . '/../controller/voucher_management.php';
         break;
     default:
         echo "Chức năng không hợp lệ!";

@@ -79,7 +79,7 @@ if ($mahd) {
             <strong>Trạng thái:</strong>
             <?php
               $st = $hoadon['TRANGTHAI'];
-              $cls = '';
+$cls = '';
               if ($st == 'Đã xác nhận') $cls = 'status-checked';
               elseif ($st == 'Chờ xác nhận') $cls = 'status-pending';
               elseif ($st == 'Đã hủy') $cls = 'status-cancel';

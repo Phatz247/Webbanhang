@@ -28,6 +28,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['action'])) {
 
 $cart_items = [];
 $total_cart_value = 0;
+$auto_select_key = $_SESSION['auto_select_item'] ?? null; // Lấy key sản phẩm cần tích chọn tự động
+unset($_SESSION['auto_select_item']); // Xóa session sau khi sử dụng
 
 foreach ($_SESSION['cart'] as $key => $item) {
     $stmt = $conn->prepare("
@@ -39,9 +41,22 @@ foreach ($_SESSION['cart'] as $key => $item) {
     $stmt->execute([$item['masp'], $item['kichthuoc']]);
     $db_data = $stmt->fetch(PDO::FETCH_ASSOC);
     if ($db_data) {
+        // Sử dụng giá từ cart (đã tính khuyến mãi) thay vì giá từ database
+        $final_price = isset($item['gia_ban']) && $item['gia_ban'] > 0 ? $item['gia_ban'] : $db_data['GIA'];
+        $original_price = $db_data['GIA']; // Giá gốc từ DB
+        
+        // Debug: Log giá hiển thị trong cart
+        error_log("Cart display - Product: " . $db_data['TENSP'] . 
+                  ", Cart gia_ban: " . ($item['gia_ban'] ?? 'none') .
+                  ", DB GIA: " . $db_data['GIA'] . 
+                  ", Final price: " . $final_price);
+        
         $db_data['soluong'] = $item['soluong'];
         $db_data['key'] = $key;
-        $db_data['subtotal'] = $db_data['GIA'] * $item['soluong'];
+        $db_data['GIA'] = $final_price; // Giá cuối cùng (sau khuyến mãi)
+        $db_data['original_price'] = $original_price; // Giá gốc để hiển thị
+        $db_data['has_sale'] = isset($item['has_promotion']) && $item['has_promotion'];
+        $db_data['subtotal'] = $final_price * $item['soluong'];
         $db_data['maxQty'] = $db_data['SOLUONG'];
         $cart_items[] = $db_data;
         $total_cart_value += $db_data['subtotal'];
@@ -65,6 +80,16 @@ foreach ($_SESSION['cart'] as $key => $item) {
       display: flex; align-items: center; gap: 18px; margin-bottom: 22px; padding: 18px 22px; transition: box-shadow .2s;
     }
     .cart-item-card:hover { box-shadow: 0 4px 24px rgba(39,174,96,0.10);}
+    .cart-item-card.auto-selected {
+      border: 2px solid #27ae60;
+      background: linear-gradient(45deg, #f8fff8, #ffffff);
+      animation: highlightPulse 2s ease-in-out;
+    }
+    @keyframes highlightPulse {
+      0% { box-shadow: 0 0 0 0 rgba(39, 174, 96, 0.7); }
+      50% { box-shadow: 0 0 0 10px rgba(39, 174, 96, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(39, 174, 96, 0); }
+    }
     .cart-image { width: 80px; height: 80px; object-fit: cover; border-radius: 10px; border: 1px solid #eee;}
     .cart-info { flex: 1; }
     .cart-title { font-size: 1.1em; font-weight: 500; color: #222; margin-bottom: 4px;}
@@ -95,6 +120,14 @@ foreach ($_SESSION['cart'] as $key => $item) {
 <body>
 <div class="container">
   <h2 class="mb-4 text-center" style="color:#27ae60;"><i class="fas fa-shopping-cart"></i> Giỏ hàng của bạn</h2>
+  
+  <?php if ($auto_select_key): ?>
+    <div class="alert alert-success alert-dismissible fade show" role="alert" style="background: linear-gradient(45deg, #27ae60, #2ecc71); color: white; border: none; border-radius: 10px;">
+      <i class="fas fa-check-circle"></i> Sản phẩm vừa mua đã được tự động chọn để thanh toán!
+      <button type="button" class="btn-close btn-close-white" data-bs-dismiss="alert"></button>
+    </div>
+  <?php endif; ?>
+  
   <form method="POST" id="cart-form">
     <?php if (empty($cart_items)): ?>
       <div class="empty-cart">
@@ -105,14 +138,24 @@ foreach ($_SESSION['cart'] as $key => $item) {
     <?php else: ?>
       <ul class="cart-list">
         <?php foreach ($cart_items as $item): ?>
-          <li class="cart-item-card">
-            <input type="checkbox" name="selected_items[]" value="<?= htmlspecialchars($item['key']) ?>" class="item-checkbox" style="margin-right:10px;">
+          <li class="cart-item-card <?= ($auto_select_key && $auto_select_key === $item['key']) ? 'auto-selected' : '' ?>">
+            <input type="checkbox" name="selected_items[]" value="<?= htmlspecialchars($item['key']) ?>" class="item-checkbox" 
+                   <?= ($auto_select_key && $auto_select_key === $item['key']) ? 'checked' : '' ?> style="margin-right:10px;">
             <img src="/web_3/view/uploads/<?= htmlspecialchars($item['HINHANH']) ?>" class="cart-image"
                  onerror="this.onerror=null;this.src='/web_3/view/uploads/no-image.jpg'">
             <div class="cart-info">
               <div class="cart-title"><?= htmlspecialchars($item['TENSP']) ?></div>
               <div class="cart-meta">Màu: <?= htmlspecialchars($item['MAUSAC']) ?> | Size: <?= htmlspecialchars($item['KICHTHUOC']) ?></div>
-              <div class="cart-meta">Đơn giá: <span class="cart-price"><?= number_format($item['GIA']) ?>đ</span></div>
+              <div class="cart-meta">
+                Đơn giá: 
+                <?php if ($item['has_sale']): ?>
+                  <span style="text-decoration: line-through; color: #888; margin-right: 5px;"><?= number_format($item['original_price']) ?>đ</span>
+                  <span class="cart-price"><?= number_format($item['GIA']) ?>đ</span>
+                  <span style="color: #28a745; font-size: 0.8em; margin-left: 5px;"><i class="fas fa-tag"></i> SALE</span>
+                <?php else: ?>
+                  <span class="cart-price"><?= number_format($item['GIA']) ?>đ</span>
+                <?php endif; ?>
+              </div>
               <div class="stock-info">Còn lại: <?= $item['maxQty'] ?> sản phẩm</div>
               <form method="POST" class="quantity-form" action="shoppingcart.php">
                 <input type="hidden" name="key" value="<?= htmlspecialchars($item['key']) ?>">
@@ -171,6 +214,8 @@ foreach ($_SESSION['cart'] as $key => $item) {
     const count = Array.from(itemCheckboxes).filter(cb => cb.checked).length;
     checkoutBtn.disabled = count === 0;
   }
+  
+  // Cập nhật trạng thái nút thanh toán ngay khi tải trang
   updateCheckoutBtn();
 
   // Xử lý nút thanh toán

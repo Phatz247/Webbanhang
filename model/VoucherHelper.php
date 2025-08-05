@@ -156,7 +156,28 @@ class VoucherHelper {
             ORDER BY can_use DESC, v.GIATRI DESC
         ");
         $stmt->execute([$orderTotal, $customerId]);
-        return $stmt->fetchAll(PDO::FETCH_ASSOC);
+        $vouchers = $stmt->fetchAll(PDO::FETCH_ASSOC);
+        
+        // Format dữ liệu cho checkout.php
+        $formatted_vouchers = [];
+        foreach ($vouchers as $voucher) {
+            $info = $this->formatVoucherInfo($voucher);
+            $discount = $this->calculateDiscount($voucher, $orderTotal);
+            
+            $formatted_vouchers[] = [
+                'code' => $voucher['MAVOUCHER'],
+                'name' => $voucher['TENVOUCHER'],
+                'description' => $voucher['MOTA'],
+                'can_use' => (bool)$voucher['can_use'],
+                'condition' => $info['condition'],
+                'expires' => $info['expires'],
+                'remaining' => $info['remaining'],
+                'formatted_discount' => $info['type'],
+                'discount_value' => $discount
+            ];
+        }
+        
+        return $formatted_vouchers;
     }
     
     /**

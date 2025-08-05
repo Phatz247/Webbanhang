@@ -69,10 +69,10 @@ if (isset($_SESSION['cart'][$key])) {
 
 $_SESSION['cart_success'] = 'Đã thêm sản phẩm vào giỏ hàng!';
 
-// Kiểm tra nếu là "mua ngay" thì chuyển thẳng đến checkout
+// Kiểm tra nếu là "mua ngay" thì chuyển đến giỏ hàng và tự động tích chọn
 if (isset($_POST['buy_now'])) {
-    $_SESSION['quick_checkout'] = [$key]; // Chỉ checkout sản phẩm vừa thêm
-    header('Location: checkout.php');
+    $_SESSION['auto_select_item'] = $key; // Đánh dấu sản phẩm cần tích chọn tự động
+    header('Location: shoppingcart.php');
 } else {
     header('Location: shoppingcart.php');
 }

@@ -219,8 +219,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' || isset($_GET['order_code'])) {
 </script>
 <?php endif; ?>
 <div class="container">
-     <a href="/web_3/index.php" class="btn btn-danger" style="float:right; margin-bottom: 20px;">
-        <i class="fas fa-sign-out-alt"></i> Thoát
+     <a href="/web_3/view/profile.php?tab=orders#orders" class="btn btn-danger" style="float:right; margin-bottom: 20px;">
+        <i class="fas fa-refresh"></i> Quay lại
     </a>
     <div class="header">
         <h1><i class="fas fa-search"></i> Tra cứu đơn hàng</h1>
