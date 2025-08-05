@@ -1,0 +1,82 @@
+/* Banner Carousel */
+.banner-carousel {
+  width: 100%;
+  max-width: 1200px;
+  margin: 20px auto;
+  border-radius: 10px;
+  overflow: hidden;
+  box-shadow: 0 5px 15px rgba(0, 0, 0, 0.1);
+  position: relative;
+}
+
+.carousel-track {
+  white-space: nowrap;
+  transition: transform 0.5s ease-in-out;
+  font-size: 0;
+}
+
+.carousel-img {
+  display: inline-block;
+  width: 100%;
+  height: auto;
+  aspect-ratio: 2.5 / 1;
+  object-fit: cover;
+  font-size: 16px;
+}
+
+.carousel-btn {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  background: rgba(255, 255, 255, 0.7);
+  border: none;
+  padding: 10px;
+  border-radius: 50%;
+  cursor: pointer;
+  z-index: 2;
+  transition: background 0.2s;
+}
+
+.carousel-btn:hover {
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.carousel-btn.prev {
+  left: 15px;
+}
+
+.carousel-btn.next {
+  right: 15px;
+}
+
+.carousel-btn i {
+  font-size: 24px;
+  color: var(--primary-color);
+}
+
+.carousel-dots {
+  position: absolute;
+  bottom: 15px;
+  left: 50%;
+  transform: translateX(-50%);
+  text-align: center;
+  font-size: 0;
+}
+
+.carousel-dots .dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  background: rgba(255, 255, 255, 0.6);
+  border-radius: 50%;
+  cursor: pointer;
+  transition: background 0.2s, transform 0.2s;
+  margin: 0 4px; /* Half of the desired gap */
+  vertical-align: top;
+  font-size: 16px; /* Restore font size */
+}
+
+.carousel-dots .dot.active {
+  background: var(--primary-color);
+  transform: scale(1.2);
+}

@@ -1,0 +1,100 @@
+.breadcrumb {
+  background: var(--background-color);
+  padding: 12px 20px;
+  font-size: 14px;
+  color: #888;
+  max-width: 1200px;
+  margin: 0 auto;
+  border-bottom: 1px solid var(--border-color);
+}
+.breadcrumb a {
+  color: var(--text-color);
+  text-decoration: none;
+}
+.breadcrumb a:hover {
+  color: var(--primary-color);
+}
+.breadcrumb span {
+  margin: 0 6px;
+  color: #bbb;
+}
+
+/* Page Title */
+.page-title {
+  font-size: 28px;
+  font-weight: bold;
+  margin: 25px auto 20px auto;
+  letter-spacing: 1px;
+  text-align: center;
+  color: var(--primary-color);
+  max-width: 1200px;
+}
+
+.product-content {
+  overflow: hidden;
+}
+
+.product-grid-quan {
+  max-width: 1200px;
+  margin: 0 auto;
+  padding: 32px 0 48px 0;
+  text-align: center;
+  font-size: 0;
+}
+
+.product-card {
+  display: inline-block;
+  vertical-align: top;
+  width: 260px;
+  margin: 0 12px 32px 12px;
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.06);
+  font-size: 16px;
+  box-sizing: border-box;
+  padding: 24px 12px 16px 12px;
+  transition: box-shadow 0.2s;
+}
+
+.product-card:hover {
+  box-shadow: 0 4px 24px rgba(0, 0, 0, 0.12);
+}
+
+@media (max-width: 1024px) {
+  .filter-sidebar {
+    width: 100%;
+    margin-right: 0;
+    margin-bottom: 20px;
+  }
+  .product-grid-quan .product-card {
+    width: 45%;
+  }
+}
+
+@media (max-width: 768px) {
+  .product-grid-quan .product-card {
+    width: 100%;
+  }
+  .page-title {
+    font-size: 24px;
+    margin-top: 20px;
+    margin-bottom: 15px;
+  }
+  .filter-sidebar {
+    padding: 15px;
+  }
+  .filter-title {
+    font-size: 16px;
+    margin-bottom: 15px;
+  }
+  .filter-group label {
+    font-size: 14px;
+  }
+  .filter-options label {
+    font-size: 13px;
+  }
+  .filter-actions button {
+    padding: 8px 15px;
+    font-size: 14px;
+  }
+}
