@@ -852,5 +852,9 @@ const masp = currentMaspMap[sz];
       updatePrice(fieldMasp.value);
     });
   </script>
+
+  <?php // Reviews block for this product
+    include __DIR__ . '/components/product_reviews.php';
+  ?>
 </body>
 </html>
