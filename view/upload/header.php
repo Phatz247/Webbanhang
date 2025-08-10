@@ -34,6 +34,14 @@ $phuKienTypes = getTypesByCategory($conn, 'PHỤ KIỆN');
 $currentAo   = $_GET['loai_ao']   ?? '';
 $currentQuan = $_GET['loai_quan'] ?? '';
 $currentPk   = $_GET['loai_pk']   ?? '';
+
+// 6) Tính số lượng sản phẩm trong giỏ (tổng số lượng, không chỉ số dòng)
+$cartCount = 0;
+if (!empty($_SESSION['cart']) && is_array($_SESSION['cart'])) {
+  foreach ($_SESSION['cart'] as $ci) {
+    $cartCount += isset($ci['soluong']) ? (int)$ci['soluong'] : 0;
+  }
+}
 ?>
 <!DOCTYPE html>
 <html lang="vi">
@@ -46,6 +54,22 @@ $currentPk   = $_GET['loai_pk']   ?? '';
         href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"
         integrity="sha512-k6RqeWeciB5apq6h+6U+v2Hl8jm7usBdGx7p6J9J89kvFjd1whvV1Ll0x0CqK5jkG2eCjMdS2Cg+Yl9oZ5eEvA=="
         crossorigin="anonymous" referrerpolicy="no-referrer" />
+  <style>
+    /* Badge số lượng giỏ hàng */
+    .header-icons .header-icon-item .icon-wrap { position: relative; display: inline-block; }
+    .header-icons .cart-count-badge {
+      position: absolute; top: -6px; right: -6px; min-width: 16px; height: 16px;
+      padding: 0 4px; border-radius: 10px; background: #fff; color: #e53935; font-size: 11px;
+      line-height: 16px; text-align: center; font-weight: 700; z-index: 2;
+      box-shadow: 0 0 0 1px rgba(0,0,0,0.1);
+    }
+    /* Stack label under icons and align all 3 evenly */
+    .header-icons .header-icon-item.icon-stack {
+      display: inline-flex; flex-direction: column; align-items: center; gap: 4px;
+      text-align: center; width: 90px;
+    }
+    .header-icons .header-icon-item.icon-stack span { display: block; }
+  </style>
 </head>
 <body>
   <div class="topbar">
@@ -72,20 +96,21 @@ $currentPk   = $_GET['loai_pk']   ?? '';
     </div>
 
     <div class="header-icons">
-      <a href="/web_3/view/membership.php" class="header-icon-item">
-        <i class="fas fa-id-card"></i><span>Chính sách khách VIP</span>
+      <a href="/web_3/view/membership.php" class="header-icon-item icon-stack">
+        <span class="icon-wrap"><i class="fas fa-id-card"></i></span>
+        <span>Chính sách khách VIP</span>
       </a>
       <!-- 
   AI CODE MỚI HIỂU      -->
      <div style="display:none">
 <?php if (isset($_SESSION['username'])): ?>
   <!-- Nếu đã đăng nhập: hiện tên và dẫn đến profile -->
-  <a href="/web_3/view/profile.php" class="header-icon-item" title="Thông tin tài khoản">
-    <i class="fas fa-user"></i>
+  <a href="/web_3/view/profile.php" class="header-icon-item icon-stack" title="Thông tin tài khoản">
+    <span class="icon-wrap"><i class="fas fa-user"></i></span>
     <span><?php echo htmlspecialchars($_SESSION['username']); ?></span>
   </a>
 <?php else: ?>
-  <!-- Nếu chưa đăng nhập: dẫn đến trang đăng nhập -->
+<!-- Nếu chưa đăng nhập: dẫn đến trang đăng nhập -->
   <a href="/web_3/view/login.php" class="header-icon-item" title="Đăng nhập">
     <i class="fas fa-user"></i>
     <span>Đăng nhập</span>
@@ -101,14 +126,20 @@ $currentPk   = $_GET['loai_pk']   ?? '';
     <span><?php echo htmlspecialchars($_SESSION['username']); ?></span>
   </a>
 <?php else: ?>
-  <a href="/web_3/view/login.php" class="header-icon-item" title="Đăng nhập">
-    <i class="fas fa-user"></i>
+  <a href="/web_3/view/login.php" class="header-icon-item icon-stack" title="Đăng nhập">
+    <span class="icon-wrap"><i class="fas fa-user"></i></span>
     <span>Tài khoản</span>
   </a>
 <?php endif; ?>
 
-      <a href="/web_3/view/shoppingcart.php" class="header-icon-item">
-        <i class="fas fa-shopping-cart"></i><span>Giỏ hàng</span>
+  <a href="/web_3/view/shoppingcart.php" class="header-icon-item icon-stack">
+        <span class="icon-wrap">
+          <i class="fas fa-shopping-cart"></i>
+          <?php if ($cartCount > 0): ?>
+            <span class="cart-count-badge"><?= (int)$cartCount ?></span>
+          <?php endif; ?>
+        </span>
+        <span>Giỏ hàng</span>
       </a>
     </div>
   </header>
@@ -171,7 +202,7 @@ $currentPk   = $_GET['loai_pk']   ?? '';
 
         <!-- Dropdown PHỤ KIỆN -->
         <li class="dropdown">
-          <a href="/web_3/view/accessory.php"
+<a href="/web_3/view/accessory.php"
              class="<?= $currentPk === '' ? 'active' : '' ?>">
             PHỤ KIỆN <i class="fas fa-chevron-down"></i>
           </a>

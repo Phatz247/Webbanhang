@@ -48,6 +48,22 @@ $stmt = $conn->prepare("
 ");
 $stmt->execute([$order_code]);
 $order_items = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+// Tính phí vận chuyển (giống checkout)
+$shipping_fee = isset($order['PHIVANCHUYEN']) ? (float)$order['PHIVANCHUYEN'] : 30000;
+if (isset($order['MAVOUCHER']) && !empty($order['MAVOUCHER'])) {
+    // Nếu có voucher freeship thì phí ship = 0
+    $voucher_stmt = $conn->prepare("SELECT LOAIVOUCHER FROM voucher WHERE MAVOUCHER = ?");
+    $voucher_stmt->execute([$order['MAVOUCHER']]);
+    $voucher_info = $voucher_stmt->fetch(PDO::FETCH_ASSOC);
+    if ($voucher_info && $voucher_info['LOAIVOUCHER'] === 'freeship') {
+        $shipping_fee = 0;
+        // Cộng giá trị freeship vào GIATRIGIAM nếu chưa có
+        if (isset($order['GIATRIGIAM'])) {
+            $order['GIATRIGIAM'] += 30000;
+        }
+    }
+}
 ?>
 
 <!DOCTYPE html>
@@ -260,10 +276,24 @@ $order_items = $stmt->fetchAll(PDO::FETCH_ASSOC);
                 </div>
                 <?php endforeach; ?>
             </div>
-<div class="total-section">
+            <div class="total-section">
                 <div class="total-row">
-                    <span>Tổng tiền:</span>
+                    <span>Tạm tính:</span>
                     <span><?php echo number_format($order['TONGTIEN']); ?>đ</span>
+                </div>
+                <div class="total-row" style="font-size:16px; color:#495057;">
+                    <span>Phí vận chuyển:</span>
+                    <span>
+                        <?php if ($shipping_fee == 0): ?>
+                            <span style="color:#28a745;">Miễn phí</span>
+                        <?php else: ?>
+                            <?php echo number_format($shipping_fee); ?>đ
+                        <?php endif; ?>
+                    </span>
+                </div>
+                <div class="total-row">
+                    <span>Tổng cộng:</span>
+                    <span><?php echo number_format($order['TONGTIEN'] + $shipping_fee); ?>đ</span>
                 </div>
             </div>
         </div>

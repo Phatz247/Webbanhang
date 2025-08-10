@@ -30,7 +30,7 @@ if (!$masp || !$tensp || !$kichthuoc || $gia_goc <= 0) {
 $stmt = $conn->prepare("
     SELECT SOLUONG 
     FROM sanpham 
-    WHERE MASP = ? AND KICHTHUOC = ?
+    WHERE MASP = ? AND KICHTHUOC = ? AND IS_DELETED = 0
 ");
 $stmt->execute([$masp, $kichthuoc]);
 $sp = $stmt->fetch(PDO::FETCH_ASSOC);

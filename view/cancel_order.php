@@ -124,6 +124,18 @@ try {
         WHERE MADONHANG = ?
     ");
     $updateOrderStmt->execute([$newStatus, $orderCode]);
+
+    // Đồng bộ trạng thái giao hàng theo hành động
+    $deliveryStatus = null;
+    if ($action === 'cancel') {
+        $deliveryStatus = 'Đã hủy';
+    } elseif ($action === 'return') {
+        $deliveryStatus = 'Yêu cầu hoàn';
+    }
+    if ($deliveryStatus !== null) {
+        $updGh = $conn->prepare("UPDATE giaohang SET TRANGTHAIGH = ?, NGAYCAPNHAT = NOW() WHERE MADONHANG = ?");
+        $updGh->execute([$deliveryStatus, $orderCode]);
+    }
     
     // Nếu là yêu cầu hoàn hàng, thêm ghi chú lý do (tùy chọn)
     if ($action === 'return' && isset($_POST['return_reason'])) {

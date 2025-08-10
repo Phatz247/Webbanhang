@@ -1,4 +1,5 @@
 <?php
+date_default_timezone_set('Asia/Ho_Chi_Minh');
 session_start();
 require_once __DIR__ . '/../model/database.php';
 require_once __DIR__ . '/../model/VoucherHelper.php';
@@ -31,8 +32,31 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_SESSION['pending_order'])) {
     unset($_SESSION['pending_order']);
 }
 
-// Khôi phục checkout state từ profile (nếu có)
+// ✅ Xử lý phục hồi từ profile với anti-duplication logic
 $restored_from_profile = false;
+$is_restore_request = false;
+
+// Kiểm tra có phải request phục hồi từ profile không
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['restore_from_profile'])) {
+    $is_restore_request = true;
+    
+    // ⚠️ QUAN TRỌNG: Kiểm tra không có đơn hàng chưa thanh toán
+    $unpaid_check = $conn->prepare("
+        SELECT COUNT(*) as unpaid_count 
+        FROM donhang 
+        WHERE user_id = ? AND TrangThai IN ('pending', 'processing')
+    ");
+    $unpaid_check->execute([$user['user_id'] ?? $user['MAKH']]);
+    $unpaid_result = $unpaid_check->fetch(PDO::FETCH_ASSOC);
+    
+    if ($unpaid_result['unpaid_count'] > 0) {
+        $_SESSION['checkout_error'] = '⚠️ Bạn có đơn hàng chưa thanh toán. Vui lòng hoàn tất thanh toán hoặc hủy đơn trước khi tạo đơn mới.';
+        header('Location: profile.php#orders');
+        exit;
+    }
+}
+
+// Khôi phục checkout state từ profile (nếu có)
 if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_SESSION['restore_checkout'])) {
     $restore_data = $_SESSION['restore_checkout'];
     // Chỉ khôi phục form data, không khôi phục selected_items để tránh duplicate
@@ -48,94 +72,164 @@ if ($_SERVER['REQUEST_METHOD'] === 'GET' && isset($_SESSION['restore_checkout'])
     $_SERVER['REQUEST_METHOD'] = 'POST';
 }
 
-// Kiểm tra có sản phẩm được chọn không (trừ khi quay lại từ profile)
+// ✅ Xử lý selected_items với validation cho restore request
 if (!$restored_from_profile && (($_SERVER['REQUEST_METHOD'] !== 'POST') || empty($_POST['selected_items']))) {
     header('Location: shoppingcart.php');
     exit;
 }
 
-// Nếu không phải từ profile thì cần selected_items
+// Xử lý selected_items
 if (!$restored_from_profile) {
-    $selected_keys = (array)$_POST['selected_items'];
-    if (empty($selected_keys)) {
-        header('Location: shoppingcart.php');
-        exit;
+    if ($is_restore_request) {
+        // ⚠️ Với restore request, validate selected_items từ database
+        $selected_keys = (array)$_POST['selected_items'];
+        if (empty($selected_keys)) {
+            $_SESSION['checkout_error'] = '⚠️ Không có sản phẩm hợp lệ để khôi phục.';
+            header('Location: shoppingcart.php');
+            exit;
+        }
+        
+        // Validate từng item với database
+        $valid_selected_keys = [];
+        foreach ($selected_keys as $cart_id) {
+            $cart_id = intval($cart_id);
+            $stmt = $conn->prepare("
+                SELECT c.*, sp.SOLUONG as available_quantity, sp.IS_DELETED
+                FROM cart c
+                JOIN sanpham sp ON c.sanpham_id = sp.ID
+                WHERE c.id = ? AND c.user_id = ?
+            ");
+            $stmt->execute([$cart_id, $user['user_id'] ?? $user['MAKH']]);
+            $item = $stmt->fetch(PDO::FETCH_ASSOC);
+            
+            if ($item && $item['IS_DELETED'] != 1 && $item['quantity'] <= $item['available_quantity']) {
+                $valid_selected_keys[] = $cart_id;
+            }
+        }
+        
+        if (empty($valid_selected_keys)) {
+            $_SESSION['checkout_error'] = '⚠️ Các sản phẩm trong đơn hàng không còn khả dụng.';
+            header('Location: shoppingcart.php');
+            exit;
+        }
+        
+        $selected_keys = $valid_selected_keys;
+    } else {
+        // Checkout bình thường
+        $selected_keys = (array)$_POST['selected_items'];
+        if (empty($selected_keys)) {
+            header('Location: shoppingcart.php');
+            exit;
+        }
     }
 } else {
     // Nếu từ profile, lấy tất cả items từ cart
     $selected_keys = array_keys($_SESSION['cart']);
 }
 
-// Lấy thông tin chi tiết các sản phẩm đã chọn từ database (cập nhật giá mới nhất)
+// ✅ Lấy thông tin chi tiết các sản phẩm đã chọn (hỗ trợ cả session cart và database cart)
 $checkout_items = [];
 $total_amount = 0;
 
+// --- Voucher eligibility preparation ---
+$voucher_eligible_masp = [];
+if (isset($_SESSION['applied_voucher']['voucher_data']['ELIGIBLE_PRODUCTS'])) {
+    $voucher_eligible_masp = $_SESSION['applied_voucher']['voucher_data']['ELIGIBLE_PRODUCTS'];
+}
+// --- End voucher eligibility ---
+
 foreach ($selected_keys as $key) {
-    if (!isset($_SESSION['cart'][$key])) continue;
-    $cart_item = $_SESSION['cart'][$key];
-    $stmt = $conn->prepare("
-        SELECT s.MASP, s.TENSP, s.GIA, s.HINHANH, s.MAUSAC, s.KICHTHUOC, s.SOLUONG,
-               ct.gia_khuyenmai, ct.giam_phantram
-        FROM sanpham s
-        LEFT JOIN chitietctkm ct ON s.MASP = ct.MASP
-        LEFT JOIN chuongtrinhkhuyenmai ctkm ON ct.MACTKM = ctkm.MACTKM 
-            AND NOW() BETWEEN ctkm.NGAYBATDAU AND ctkm.NGAYKETTHUC
-        WHERE s.MASP = ? AND s.KICHTHUOC = ?
-        LIMIT 1
-    ");
-    $stmt->execute([$cart_item['masp'], $cart_item['kichthuoc']]);
-    $sp = $stmt->fetch(PDO::FETCH_ASSOC);
-    if (!$sp) continue;
-    if ($sp['SOLUONG'] < $cart_item['soluong']) {
-        $_SESSION['checkout_error'] = "Sản phẩm {$sp['TENSP']} (Size: {$sp['KICHTHUOC']}) không đủ hàng!";
+    $cart_item = null;
+    $item_source = 'session'; // 'session' hoặc 'database'
+    
+    if ($is_restore_request) {
+        // Với restore request, $key là cart_id từ database
+        $cart_id = intval($key);
+        $stmt = $conn->prepare("
+            SELECT c.*, sp.TenSanPham, sp.GiaBan, sp.HinhAnh, sp.SoLuong as available_quantity
+            FROM cart c
+            JOIN sanpham sp ON c.sanpham_id = sp.ID
+            WHERE c.id = ? AND c.user_id = ?
+        ");
+        $stmt->execute([$cart_id, $user['user_id'] ?? $user['MAKH']]);
+        $db_cart_item = $stmt->fetch(PDO::FETCH_ASSOC);
+        
+        if ($db_cart_item) {
+            $cart_item = [
+                'masp' => $db_cart_item['sanpham_id'],
+                'tensp' => $db_cart_item['TenSanPham'],
+                'soluong' => $db_cart_item['quantity'],
+                'gia_ban' => $db_cart_item['GiaBan'],
+                'hinhanh' => $db_cart_item['HinhAnh'],
+                'mausac' => $db_cart_item['color'] ?? '',
+                'kichthuoc' => $db_cart_item['size'] ?? '',
+                'available_quantity' => $db_cart_item['available_quantity']
+            ];
+            $item_source = 'database';
+        }
+    } else {
+        // Checkout bình thường từ session
+        if (isset($_SESSION['cart'][$key])) {
+            $cart_item = $_SESSION['cart'][$key];
+        }
+    }
+    
+    if (!$cart_item) continue;
+
+    // Validate tồn kho
+    if (isset($cart_item['available_quantity'])) {
+        $available = $cart_item['available_quantity'];
+    } else {
+        // Lấy từ database nếu chưa có
+        $stmt = $conn->prepare("SELECT SOLUONG FROM sanpham WHERE MASP = ? OR ID = ?");
+        $stmt->execute([$cart_item['masp'], $cart_item['masp']]);
+        $stock_result = $stmt->fetch(PDO::FETCH_ASSOC);
+        $available = $stock_result ? $stock_result['SOLUONG'] : 0;
+    }
+    
+    if ($available < $cart_item['soluong']) {
+        $product_name = $cart_item['tensp'] ?? 'Sản phẩm';
+        $_SESSION['checkout_error'] = "Sản phẩm {$product_name} không đủ hàng! (Còn: {$available}, Yêu cầu: {$cart_item['soluong']})";
         header('Location: shoppingcart.php');
         exit;
     }
     
-    // Tính giá cuối cùng (ưu tiên giá từ cart đã tính khuyến mãi)
-    $final_price = $sp['GIA']; // Giá gốc mặc định
-    
-    // Debug: Log thông tin để kiểm tra
-    error_log("Product: " . $sp['TENSP']);
-    error_log("Original price from DB: " . $sp['GIA']);
-    error_log("Cart gia_ban: " . ($cart_item['gia_ban'] ?? 'none'));
-    error_log("DB gia_khuyenmai: " . ($sp['gia_khuyenmai'] ?? 'none'));
-    error_log("DB giam_phantram: " . ($sp['giam_phantram'] ?? 'none'));
-    
-    // Nếu cart có gia_ban (giá đã tính khuyến mãi) thì dùng giá đó
-    if (isset($cart_item['gia_ban']) && $cart_item['gia_ban'] > 0) {
-        $final_price = $cart_item['gia_ban'];
-        error_log("Using cart price: " . $final_price);
-    } else {
-        // Nếu không có trong cart, tính từ database
-        if ($sp['gia_khuyenmai']) {
-            $final_price = $sp['gia_khuyenmai']; // Giá khuyến mãi cố định
-            error_log("Using DB gia_khuyenmai: " . $final_price);
-        } elseif ($sp['giam_phantram']) {
-            $final_price = $sp['GIA'] * (1 - $sp['giam_phantram']/100); // Giá giảm theo %
-            error_log("Using DB giam_phantram: " . $final_price);
-        } else {
-            error_log("Using original price: " . $final_price);
+    // Chuẩn bị dữ liệu checkout item
+    $final_price = $cart_item['gia_ban'] ?? $cart_item['GIA'] ?? 0;
+
+    // --- Voucher price adjustment per item ---
+    $has_voucher = false;
+    $discounted_price = $final_price;
+    if (isset($_SESSION['applied_voucher']['voucher_data'])) {
+        $voucher = $_SESSION['applied_voucher']['voucher_data'];
+        // Check eligibility
+        $eligible = empty($voucher_eligible_masp) || in_array($cart_item['masp'], $voucher_eligible_masp);
+        if ($eligible) {
+            $has_voucher = true;
+            if ($voucher['LOAIVOUCHER'] === 'percent') {
+                $discounted_price = round($final_price * (1 - $voucher['GIATRI'] / 100));
+            } elseif ($voucher['LOAIVOUCHER'] === 'fixed') {
+                $discounted_price = max(0, $final_price - $voucher['GIATRI']);
+            }
         }
     }
-    
-    // Kiểm tra xem có khuyến mãi hay không
-    $has_sale = (isset($cart_item['has_promotion']) && $cart_item['has_promotion']) || 
-                ($sp['gia_khuyenmai'] || $sp['giam_phantram']);
-    
+    // --- End voucher price adjustment ---
+
     $checkout_item = [
         'key' => $key,
-        'masp' => $sp['MASP'],
-        'tensp' => $sp['TENSP'],
-        'hinhanh' => $sp['HINHANH'],
-        'mausac' => $sp['MAUSAC'],
-        'kichthuoc' => $sp['KICHTHUOC'],
+        'masp' => $cart_item['masp'],
+        'tensp' => $cart_item['tensp'] ?? $cart_item['TENSP'] ?? '',
+        'hinhanh' => $cart_item['hinhanh'] ?? $cart_item['HINHANH'] ?? '',
+        'mausac' => $cart_item['mausac'] ?? $cart_item['MAUSAC'] ?? '',
+        'kichthuoc' => $cart_item['kichthuoc'] ?? $cart_item['KICHTHUOC'] ?? '',
         'soluong' => $cart_item['soluong'],
-        'original_price' => $sp['GIA'], // Giá gốc để hiển thị
-        'final_price' => $final_price,  // Giá cuối cùng để tính toán
-        'subtotal' => $final_price * $cart_item['soluong'],
-        'has_sale' => $has_sale
+        'original_price' => $final_price,
+        'final_price' => $discounted_price,
+        'subtotal' => $discounted_price * $cart_item['soluong'],
+        'has_sale' => $has_voucher,
+        'item_source' => $item_source
     ];
+    
     $checkout_items[] = $checkout_item;
     $total_amount += $checkout_item['subtotal'];
 }
@@ -163,20 +257,30 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['remove_voucher'])) {
 // Apply voucher
 if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['apply_voucher'])) {
     $voucher_code = strtoupper(trim($_POST['voucher_code'] ?? ''));
-    
     if (!empty($voucher_code)) {
         try {
             $validation = $voucherHelper->validateVoucher($voucher_code, $user['MAKH'], $original_total);
-            
             if ($validation['valid']) {
                 $applied_voucher = $validation['voucher'];
-                $voucher_discount = $voucherHelper->calculateDiscount($applied_voucher, $original_total);
+                // --- Calculate discount only for eligible items ---
+                $voucher_discount = 0;
+                foreach ($checkout_items as $item) {
+                    $eligible = empty($applied_voucher['ELIGIBLE_PRODUCTS']) || in_array($item['masp'], $applied_voucher['ELIGIBLE_PRODUCTS']);
+                    if ($eligible) {
+                        if ($applied_voucher['LOAIVOUCHER'] === 'percent') {
+                            $voucher_discount += round($item['original_price'] * $item['soluong'] * ($applied_voucher['GIATRI'] / 100));
+                        } elseif ($applied_voucher['LOAIVOUCHER'] === 'fixed') {
+                            $voucher_discount += min($item['original_price'] * $item['soluong'], $applied_voucher['GIATRI']);
+                        }
+                    }
+                }
                 $total_amount = $original_total - $voucher_discount;
                 $_SESSION['applied_voucher'] = [
                     'code' => $voucher_code,
                     'discount' => $voucher_discount,
                     'voucher_data' => $applied_voucher
                 ];
+                // --- End discount calculation ---
             } else {
                 $voucher_errors[] = $validation['message'];
             }
@@ -191,15 +295,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['apply_voucher'])) {
 // Khôi phục voucher từ session nếu có (khi không có action mới)
 if (!$applied_voucher && isset($_SESSION['applied_voucher']) && 
     !isset($_POST['apply_voucher']) && !isset($_POST['remove_voucher'])) {
-    
     $session_voucher = $_SESSION['applied_voucher'];
     try {
         $validation = $voucherHelper->validateVoucher($session_voucher['code'], $user['MAKH'], $original_total);
-        
         if ($validation['valid']) {
             $applied_voucher = $validation['voucher'];
-            $voucher_discount = $voucherHelper->calculateDiscount($applied_voucher, $original_total);
+            // --- Calculate discount only for eligible items ---
+            $voucher_discount = 0;
+            foreach ($checkout_items as $item) {
+                $eligible = empty($applied_voucher['ELIGIBLE_PRODUCTS']) || in_array($item['masp'], $applied_voucher['ELIGIBLE_PRODUCTS']);
+                if ($eligible) {
+                    if ($applied_voucher['LOAIVOUCHER'] === 'percent') {
+                        $voucher_discount += round($item['original_price'] * $item['soluong'] * ($applied_voucher['GIATRI'] / 100));
+                    } elseif ($applied_voucher['LOAIVOUCHER'] === 'fixed') {
+                        $voucher_discount += min($item['original_price'] * $item['soluong'], $applied_voucher['GIATRI']);
+                    }
+                }
+            }
             $total_amount = $original_total - $voucher_discount;
+            // --- End discount calculation ---
         } else {
             unset($_SESSION['applied_voucher']);
             $voucher_errors[] = 'Voucher đã hết hạn hoặc không còn hiệu lực';
@@ -236,7 +350,14 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['place_order'])) {
         $fullname = $khachhang['TENKH'];
         $phone = $khachhang['SDT'];
         $address = $khachhang['DIACHI'];
-        
+
+        // Tính phí vận chuyển trước khi tạo đơn hàng
+        $shipping_fee = ($applied_voucher && $applied_voucher['LOAIVOUCHER'] === 'freeship') ? 0 : 30000;
+        // Nếu voucher là freeship, cộng thêm giá trị freeship vào voucher_discount
+        if ($applied_voucher && $applied_voucher['LOAIVOUCHER'] === 'freeship') {
+            $voucher_discount += 30000;
+        }
+
         try {
             // Bắt đầu transaction
             $conn->beginTransaction();
@@ -250,8 +371,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['place_order'])) {
             
             // Tạo đơn hàng
             $stmt = $conn->prepare("
-                INSERT INTO donhang (MADONHANG, MAKH, NGAYDAT, TONGTIEN, TRANGTHAI, HOTEN, SODIENTHOAI, DIACHI, PHUONGTHUCTHANHTOAN, GHICHU, MAVOUCHER, GIATRIGIAM)
-                VALUES (?, ?, NOW(), ?, 'Chờ xử lý', ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO donhang (MADONHANG, MAKH, NGAYDAT, TONGTIEN, TRANGTHAI, HOTEN, SODIENTHOAI, DIACHI, PHUONGTHUCTHANHTOAN, GHICHU, MAVOUCHER, GIATRIGIAM, PHIVANCHUYEN)
+                VALUES (?, ?, NOW(), ?, 'Chờ xử lý', ?, ?, ?, ?, ?, ?, ?, ?)
             ");
             $stmt->execute([
                 $order_code,
@@ -263,7 +384,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['place_order'])) {
                 $payment_method,
                 $notes,
                 $applied_voucher ? $applied_voucher['MAVOUCHER'] : null,
-                $voucher_discount
+                $voucher_discount,
+                $shipping_fee
             ]);
             
             // Tạo hóa đơn
@@ -289,19 +411,18 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['place_order'])) {
                 ]);
                 
                 // Thêm vào chi tiết hóa đơn
-                $stmt = $conn->prepare("
-    INSERT INTO chitiethoadon (MAHD, MASP, SOLUONG, DONGIA)
-    VALUES (?, ?, ?, ?)
-    ON DUPLICATE KEY UPDATE
-        SOLUONG = SOLUONG + VALUES(SOLUONG)
-");
-$stmt->execute([
-    $mahd,
-    $item['masp'],
-    $item['soluong'],
-    $item['final_price']
-]);
-
+                                $stmt = $conn->prepare("
+                    INSERT INTO chitiethoadon (MAHD, MASP, SOLUONG, DONGIA)
+                    VALUES (?, ?, ?, ?)
+                    ON DUPLICATE KEY UPDATE
+                        SOLUONG = SOLUONG + VALUES(SOLUONG)
+                ");
+                $stmt->execute([
+                    $mahd,
+                    $item['masp'],
+                    $item['soluong'],
+                    $item['final_price']
+                ]);
 
                 // Cập nhật số lượng sản phẩm
                 $stmt = $conn->prepare("
@@ -316,9 +437,31 @@ $stmt->execute([
                     $item['soluong']
                 ]);
                 
-                // Xóa sản phẩm khỏi giỏ hàng
-                unset($_SESSION['cart'][$item['key']]);
+                // ✅ Xóa sản phẩm khỏi giỏ hàng (cả session và database)
+                if ($item['item_source'] === 'database' && $is_restore_request) {
+                    // Xóa từ database cart
+                    $stmt = $conn->prepare("DELETE FROM cart WHERE id = ? AND user_id = ?");
+                    $stmt->execute([$item['key'], $user['user_id'] ?? $user['MAKH']]);
+                } else {
+                    // Xóa từ session cart
+                    unset($_SESSION['cart'][$item['key']]);
+                }
             }
+
+            // Tạo giao hàng (một lần cho cả đơn hàng)
+            $magh = 'GH' . date('YmdHis') . rand(100, 999);
+            $stmt = $conn->prepare("
+                INSERT INTO giaohang (MAGH, MADONHANG, MAHD, NGAYTAO, DIACHIGIAO, SDT_NHAN, TEN_NGUOINHAN, TRANGTHAIGH, PHIVANCHUYEN, GHICHU_GH)
+                VALUES (?, ?, ?, NOW(), ?, ?, ?, 'Chờ xử lý', 30000, 'Đơn hàng mới được tạo')
+            ");
+            $stmt->execute([
+                $magh,
+                $order_code,
+                $mahd,
+                $address,
+                $phone,
+                $fullname
+            ]);
 
             // Áp dụng voucher nếu có (không dùng VoucherHelper để tránh lỗi)
             if ($applied_voucher) {
@@ -351,6 +494,10 @@ $stmt->execute([
 
             // Commit transaction
             $conn->commit();
+            
+            // ✅ Cleanup session data
+            unset($_SESSION['applied_voucher']);
+            unset($_SESSION['checkout_state']); // Xóa checkout state để tránh restore lại
             
             $_SESSION['order_success'] = "Đặt hàng thành công! Mã đơn hàng: {$order_code}";
             header('Location: order_success.php?order=' . $order_code);

@@ -1,5 +1,5 @@
 <?php
-// index.php
+// index.php - Thêm CSS footer
 
 require_once __DIR__ . "/model/database.php";
 $db   = new database();
@@ -27,7 +27,7 @@ $hotProducts = $conn->query("
     LEFT JOIN chitietctkm ct ON sp.MASP = ct.MASP
     LEFT JOIN chuongtrinhkhuyenmai ctkm ON ct.MACTKM = ctkm.MACTKM 
         AND NOW() BETWEEN ctkm.NGAYBATDAU AND ctkm.NGAYKETTHUC
-    WHERE sp.hot=1 AND sp.is_main=1
+    WHERE sp.hot=1 AND sp.is_main=1 AND sp.IS_DELETED=0
     ORDER BY sp.ID DESC LIMIT 16
 ")->fetchAll(PDO::FETCH_ASSOC);
 $hotProducts = uniqueByName($hotProducts);
@@ -39,7 +39,7 @@ $newProducts = $conn->query("
     LEFT JOIN chitietctkm ct ON sp.MASP = ct.MASP
     LEFT JOIN chuongtrinhkhuyenmai ctkm ON ct.MACTKM = ctkm.MACTKM 
         AND NOW() BETWEEN ctkm.NGAYBATDAU AND ctkm.NGAYKETTHUC
-    WHERE sp.news=1 AND sp.is_main=1
+    WHERE sp.news=1 AND sp.is_main=1 AND sp.IS_DELETED=0
     ORDER BY sp.ID DESC LIMIT 16
 ")->fetchAll(PDO::FETCH_ASSOC);
 $newProducts = uniqueByName($newProducts);
@@ -51,7 +51,7 @@ $saleProducts = $conn->query("
     JOIN chitietctkm ct ON sp.MASP = ct.MASP
     JOIN chuongtrinhkhuyenmai ctkm ON ct.MACTKM = ctkm.MACTKM 
         AND NOW() BETWEEN ctkm.NGAYBATDAU AND ctkm.NGAYKETTHUC
-    WHERE sp.is_main=1
+    WHERE sp.is_main=1 AND sp.IS_DELETED=0
     ORDER BY sp.ID DESC LIMIT 16
 ")->fetchAll(PDO::FETCH_ASSOC);
 $saleProducts = uniqueByName($saleProducts);
@@ -65,6 +65,7 @@ $saleProducts = uniqueByName($saleProducts);
   <title>Shoppe - Thời trang nam</title>
   <link rel="stylesheet" href="/web_3/view/css/style.css" />
   <link rel="stylesheet" href="/web_3/view/css/product.css" />
+  <link rel="stylesheet" href="/web_3/view/css/footer.css" />
   <script src="/web_3/view/js/script.js" defer></script>
   <link rel="stylesheet"
         href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css"
@@ -82,8 +83,7 @@ $saleProducts = uniqueByName($saleProducts);
   <section class="products-section">
     <h2 class="section-title">THỜI TRANG HOT NHẤT</h2>
     <div class="product-grid">
-      <?php foreach ($hotProducts as $sp): ?>
-        <div class="product-card" onclick="location.href='/web_3/view/product_detail.php?masp=<?= urlencode($sp['MASP']) ?>'">
+      <?php foreach ($hotProducts as $sp): ?><div class="product-card" onclick="location.href='/web_3/view/product_detail.php?masp=<?= urlencode($sp['MASP']) ?>'">
           <span class="badge hot">HOT</span>
           <img src="/web_3/view/uploads/<?= htmlspecialchars($sp['HINHANH']) ?>" alt="<?= htmlspecialchars($sp['TENSP']) ?>" />
           <div class="product-title"><?= htmlspecialchars($sp['TENSP']) ?></div>
@@ -147,7 +147,7 @@ $saleProducts = uniqueByName($saleProducts);
       <?php foreach ($saleProducts as $sp): ?>
         <div class="product-card" onclick="location.href='/web_3/view/product_detail.php?masp=<?= urlencode($sp['MASP']) ?>'">
           <span class="badge sale">SALE</span>
-          <img src="/web_3/view/uploads/<?= htmlspecialchars($sp['HINHANH']) ?>" alt="<?= htmlspecialchars($sp['TENSP']) ?>" />
+<img src="/web_3/view/uploads/<?= htmlspecialchars($sp['HINHANH']) ?>" alt="<?= htmlspecialchars($sp['TENSP']) ?>" />
           <div class="product-title"><?= htmlspecialchars($sp['TENSP']) ?></div>
           <div class="price">
             <span class="old-price"><?= number_format($sp['GIA']) ?> ₫</span>

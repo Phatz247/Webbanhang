@@ -30,24 +30,46 @@ foreach ($aoTypes as $t) {
 }
 $page_title = $ten_loai ?: 'ÁO NAM';
 
-// 3) Truy vấn sản phẩm chính (is_main = 1), hoặc theo loại nếu có loai_ao
+// 3) Truy vấn sản phẩm chính (is_main = 1) với thông tin khuyến mãi
 if ($currentAo && $ten_loai) {
     $stmt = $conn->prepare("
-      SELECT s.*
+      SELECT s.*, gs.gia_khuyenmai, gs.giam_phantram
       FROM sanpham s
+      LEFT JOIN (
+        SELECT sv.GROUPSP,
+               MAX(CASE WHEN ctkm.NGAYBATDAU <= NOW() AND NOW() <= ctkm.NGAYKETTHUC AND ct.gia_khuyenmai > 0 THEN ct.gia_khuyenmai ELSE 0 END) AS gia_khuyenmai,
+               MAX(CASE WHEN ctkm.NGAYBATDAU <= NOW() AND NOW() <= ctkm.NGAYKETTHUC AND ct.giam_phantram > 0 THEN ct.giam_phantram ELSE 0 END) AS giam_phantram
+        FROM sanpham sv
+        JOIN chitietctkm ct ON ct.MASP = sv.MASP
+        JOIN chuongtrinhkhuyenmai ctkm ON ct.MACTKM = ctkm.MACTKM
+        WHERE sv.IS_DELETED = 0
+        GROUP BY sv.GROUPSP
+      ) gs ON gs.GROUPSP = s.GROUPSP
       WHERE s.MALOAI = :maloai
         AND s.is_main = 1
+        AND s.IS_DELETED = 0
       ORDER BY s.ID DESC
     ");
     $stmt->execute([':maloai' => $currentAo]);
 } else {
     $stmt = $conn->prepare("
-      SELECT s.*
+      SELECT s.*, gs.gia_khuyenmai, gs.giam_phantram
       FROM sanpham s
       JOIN loaisanpham l ON s.MALOAI = l.MALOAI
       JOIN danhmuc d       ON l.MADM   = d.MADM
+      LEFT JOIN (
+        SELECT sv.GROUPSP,
+               MAX(CASE WHEN ctkm.NGAYBATDAU <= NOW() AND NOW() <= ctkm.NGAYKETTHUC AND ct.gia_khuyenmai > 0 THEN ct.gia_khuyenmai ELSE 0 END) AS gia_khuyenmai,
+               MAX(CASE WHEN ctkm.NGAYBATDAU <= NOW() AND NOW() <= ctkm.NGAYKETTHUC AND ct.giam_phantram > 0 THEN ct.giam_phantram ELSE 0 END) AS giam_phantram
+        FROM sanpham sv
+        JOIN chitietctkm ct ON ct.MASP = sv.MASP
+        JOIN chuongtrinhkhuyenmai ctkm ON ct.MACTKM = ctkm.MACTKM
+        WHERE sv.IS_DELETED = 0
+        GROUP BY sv.GROUPSP
+      ) gs ON gs.GROUPSP = s.GROUPSP
       WHERE d.TENDM = 'ÁO NAM'
         AND s.is_main = 1
+        AND s.IS_DELETED = 0
       ORDER BY s.ID DESC
     ");
     $stmt->execute();
@@ -100,13 +122,22 @@ foreach ($mainProducts as $sp) {
         <p>Không có sản phẩm nào.</p>
       <?php else: ?>
         <?php foreach ($products as $sp): ?>
-          <a href="product_detail.php?masp=<?= urlencode($sp['MASP']) ?>" class="product-card">
-            <img src="/web_3/view/uploads/<?= htmlspecialchars($sp['HINHANH']) ?>"
-                 alt="<?= htmlspecialchars($sp['TENSP']) ?>">
+          <div class="product-card" onclick="location.href='/web_3/view/product_detail.php?masp=<?= urlencode($sp['MASP']) ?>'">
+            <?php if ($sp['gia_khuyenmai'] || $sp['giam_phantram']): ?>
+              <span class="badge sale">SALE</span>
+            <?php endif; ?>
+            <img src="/web_3/view/uploads/<?= htmlspecialchars($sp['HINHANH']) ?>" alt="<?= htmlspecialchars($sp['TENSP']) ?>" />
             <div class="product-title"><?= htmlspecialchars($sp['TENSP']) ?></div>
-            <div class="product-color">Màu: <?= htmlspecialchars($sp['MAUSAC']) ?></div>
-            <div class="price"><?= number_format($sp['GIA']) ?> ₫</div>
-          </a>
+            <div class="price">
+              <?php if ($sp['gia_khuyenmai'] || $sp['giam_phantram']): ?>
+                <span class="old-price"><?= number_format($sp['GIA']) ?> ₫</span>
+                <span class="sale-price"><?= $sp['gia_khuyenmai'] ? number_format($sp['gia_khuyenmai']) . ' ₫' : number_format($sp['GIA'] * (1 - $sp['giam_phantram']/100)) . ' ₫' ?></span>
+              <?php else: ?>
+                <?= number_format($sp['GIA']) ?> ₫
+              <?php endif; ?>
+            </div>
+            <div class="product-meta">Màu: <?= htmlspecialchars($sp['MAUSAC']) ?></div>
+          </div>
         <?php endforeach; ?>
       <?php endif; ?>
     </div>

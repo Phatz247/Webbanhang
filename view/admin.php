@@ -31,7 +31,7 @@ switch($section) {
     case 'khuyenmai':
         include __DIR__ . '/../controller/promotion_management.php';
         break;
-    case 'voucher':
+    case 'phieugiamgia':
         include __DIR__ . '/../controller/voucher_management.php';
         break;
     case 'taikhoan':
@@ -42,6 +42,9 @@ switch($section) {
         break;
     case 'donhang':
         include __DIR__ . '/../controller/order_management.php';
+        break;
+    case 'giaohang':
+        include __DIR__ . '/../controller/delivery_management.php';
         break;
     case 'thethanhvien':
         include __DIR__ . '/../controller/membercard.php';

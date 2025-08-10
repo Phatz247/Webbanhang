@@ -120,7 +120,7 @@ $cls = '';
         </table>
       </div>
     <?php endif; ?>
-    <a href="/web_3/controller/invoice_management.php" class="btn btn-secondary">← Quay lại danh sách hóa đơn</a>
+    <a href="/web_3/view/admin.php?section=chitiethoadon" class="btn btn-secondary">← Quay lại danh sách hóa đơn</a>
   </div>
 </div>
 </body>

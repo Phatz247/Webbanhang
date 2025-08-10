@@ -21,6 +21,25 @@ $stmt = $conn->query("SELECT sp.MASP, sp.TENSP, sp.GIA, ct.gia_khuyenmai, ct.gia
                       ORDER BY sp.TENSP");
 $sanpham_co_sale = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
+// Lấy tất cả sản phẩm để hiển thị trong danh sách gán sale
+// Bao gồm trạng thái chương trình: đang diễn ra, sắp diễn ra, đã kết thúc, hoặc chưa có
+$stmt = $conn->query("SELECT sp.MASP, sp.TENSP, sp.GIA, sp.MAUSAC, sp.KICHTHUOC, sp.SOLUONG,
+                      ct.gia_khuyenmai, ct.giam_phantram, ctkm.TENCTKM, ctkm.MACTKM,
+                      ctkm.NGAYBATDAU, ctkm.NGAYKETTHUC,
+                      CASE 
+                        WHEN ctkm.MACTKM IS NULL THEN 'no_sale'
+                        WHEN NOW() BETWEEN ctkm.NGAYBATDAU AND ctkm.NGAYKETTHUC THEN 'active_sale'
+                        WHEN NOW() < ctkm.NGAYBATDAU THEN 'future_sale'
+                        WHEN NOW() > ctkm.NGAYKETTHUC THEN 'expired_sale'
+                        ELSE 'no_sale'
+                      END AS sale_status
+                      FROM sanpham sp 
+                      LEFT JOIN chitietctkm ct ON sp.MASP = ct.MASP
+                      LEFT JOIN chuongtrinhkhuyenmai ctkm ON ct.MACTKM = ctkm.MACTKM
+                      WHERE sp.IS_DELETED = 0
+                      ORDER BY sp.TENSP, sp.MAUSAC, sp.KICHTHUOC");
+$all_products = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
 // Xử lý form thêm/sửa/xóa/gán sale
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     // Thêm CTKM
@@ -38,7 +57,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt = $conn->prepare("INSERT INTO chuongtrinhkhuyenmai (MACTKM, TENCTKM, NGAYBATDAU, NGAYKETTHUC, MOTA) VALUES (?, ?, ?, ?, ?)");
         $stmt->execute([$mactkm, $tenctkm, $ngaybatdau, $ngayketthuc, $mota]);
         $_SESSION['alert_success'] = "✔️ Thêm chương trình khuyến mãi thành công!";
-        header("Location: khuyenmai.php"); exit;
+        echo "<script>window.location.href = '/web_3/view/admin.php?section=khuyenmai';</script>"; exit;
     }
     // Sửa CTKM
     if (isset($_POST['update_sale_program'])) {
@@ -50,29 +69,78 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt = $conn->prepare("UPDATE chuongtrinhkhuyenmai SET TENCTKM=?, NGAYBATDAU=?, NGAYKETTHUC=?, MOTA=? WHERE MACTKM=?");
         $stmt->execute([$tenctkm, $ngaybatdau, $ngayketthuc, $mota, $mactkm]);
         $_SESSION['alert_success'] = "✔️ Đã cập nhật chương trình!";
-        header("Location: khuyenmai.php"); exit;
+        echo "<script>window.location.href = '/web_3/view/admin.php?section=khuyenmai';</script>"; exit;
     }
     // Gán sale cho sản phẩm
-    if (isset($_POST['action']) && $_POST['action'] === 'assign_sale') {
-        $mactkm = $_POST['mactkm'];
-        $masp = $_POST['masp'];
-        $sale_type = $_POST['sale_type'];
-        $gia_khuyenmai = $sale_type === 'fixed' ? $_POST['gia_khuyenmai'] : null;
-        $giam_phantram = $sale_type === 'percent' ? $_POST['giam_phantram'] : null;
+  if (isset($_POST['action']) && $_POST['action'] === 'assign_sale') {
+    $mactkm = $_POST['mactkm'];
+    $masp = trim($_POST['masp']);
+    $sale_type = $_POST['sale_type'];
+    $gia_khuyenmai = $sale_type === 'fixed' ? ($_POST['gia_khuyenmai'] !== '' ? (int)$_POST['gia_khuyenmai'] : null) : null;
+    $giam_phantram = $sale_type === 'percent' ? ($_POST['giam_phantram'] !== '' ? (int)$_POST['giam_phantram'] : null) : null;
+    $apply_group_color = !empty($_POST['apply_group_color']);
 
-        // Check liên kết
-        $stmt = $conn->prepare("SELECT * FROM chitietctkm WHERE MASP = ? AND MACTKM = ?");
-        $stmt->execute([$masp, $mactkm]);
-        if ($stmt->fetch()) {
-            $stmt = $conn->prepare("UPDATE chitietctkm SET gia_khuyenmai = ?, giam_phantram = ? WHERE MASP = ? AND MACTKM = ?");
-            $stmt->execute([$gia_khuyenmai, $giam_phantram, $masp, $mactkm]);
-        } else {
-            $stmt = $conn->prepare("INSERT INTO chitietctkm (MASP, MACTKM, gia_khuyenmai, giam_phantram) VALUES (?, ?, ?, ?)");
-            $stmt->execute([$masp, $mactkm, $gia_khuyenmai, $giam_phantram]);
-        }
-        $_SESSION['alert_success'] = "✔️ Gán sale cho sản phẩm thành công!";
-        header("Location: khuyenmai.php"); exit;
+    // Validate: only one type is provided
+    if ($sale_type === 'fixed' && ($gia_khuyenmai === null || $gia_khuyenmai < 0)) {
+      $_SESSION['alert_success'] = "⚠️ Vui lòng nhập giá khuyến mãi hợp lệ.";
+      echo "<script>window.location.href = '/web_3/view/admin.php?section=khuyenmai';</script>"; exit;
     }
+    if ($sale_type === 'percent' && ($giam_phantram === null || $giam_phantram < 1 || $giam_phantram > 99)) {
+      $_SESSION['alert_success'] = "⚠️ Vui lòng nhập phần trăm giảm từ 1 đến 99.";
+      echo "<script>window.location.href = '/web_3/view/admin.php?section=khuyenmai';</script>"; exit;
+    }
+
+    // Helper to upsert a single MASP
+    $upsert = function($maspItem) use ($conn, $mactkm, $gia_khuyenmai, $giam_phantram) {
+      $stmt = $conn->prepare("SELECT 1 FROM chitietctkm WHERE MASP = ? AND MACTKM = ?");
+      $stmt->execute([$maspItem, $mactkm]);
+      if ($stmt->fetchColumn()) {
+        $stmt = $conn->prepare("UPDATE chitietctkm SET gia_khuyenmai = ?, giam_phantram = ? WHERE MASP = ? AND MACTKM = ?");
+        $stmt->execute([$gia_khuyenmai, $giam_phantram, $maspItem, $mactkm]);
+      } else {
+        $stmt = $conn->prepare("INSERT INTO chitietctkm (MASP, MACTKM, gia_khuyenmai, giam_phantram) VALUES (?, ?, ?, ?)");
+        $stmt->execute([$maspItem, $mactkm, $gia_khuyenmai, $giam_phantram]);
+      }
+    };
+
+    $affected = 0;
+    if ($apply_group_color) {
+      // Find the group and color of the provided MASP
+      $stmt = $conn->prepare("SELECT GROUPSP, MAUSAC FROM sanpham WHERE MASP = ? LIMIT 1");
+      $stmt->execute([$masp]);
+      $src = $stmt->fetch(PDO::FETCH_ASSOC);
+      if ($src && $src['GROUPSP']) {
+        // Apply to all variants in the same group and color (i.e., all sizes of this color)
+        $stmt = $conn->prepare("SELECT MASP FROM sanpham WHERE GROUPSP = ? AND MAUSAC = ? AND IS_DELETED = 0");
+        $stmt->execute([$src['GROUPSP'], $src['MAUSAC']]);
+        $variants = $stmt->fetchAll(PDO::FETCH_COLUMN);
+        if ($variants) {
+          $conn->beginTransaction();
+          try {
+            foreach ($variants as $vmasp) {
+              $upsert($vmasp);
+              $affected++;
+            }
+            $conn->commit();
+          } catch (Exception $e) {
+            $conn->rollBack();
+            throw $e;
+          }
+        }
+      } else {
+        // Fallback to single when MASP not found
+        $upsert($masp);
+        $affected = 1;
+      }
+    } else {
+      // Only this variant
+      $upsert($masp);
+      $affected = 1;
+    }
+
+    $_SESSION['alert_success'] = "✔️ Đã gán sale cho " . ($affected ?: 1) . " biến thể!";
+    echo "<script>window.location.href = '/web_3/view/admin.php?section=khuyenmai';</script>"; exit;
+  }
 }
 // Xoá CTKM
 if (isset($_GET['delete_sale'])) {
@@ -80,7 +148,7 @@ if (isset($_GET['delete_sale'])) {
     $stmt = $conn->prepare("DELETE FROM chuongtrinhkhuyenmai WHERE MACTKM = ?");
     $stmt->execute([$mactkm]);
     $_SESSION['alert_success'] = "✔️ Đã xóa chương trình khuyến mãi!";
-    header("Location: khuyenmai.php"); exit;
+    echo "<script>window.location.href = '/web_3/view/admin.php?section=khuyenmai';</script>"; exit;
 }
 // Sửa chương trình
 $editSaleProgram = null;
@@ -97,7 +165,7 @@ if (isset($_GET['remove_sale'])) {
     $stmt = $conn->prepare("DELETE FROM chitietctkm WHERE MASP = ? AND MACTKM = ?");
     $stmt->execute([$masp, $mactkm]);
     $_SESSION['alert_success'] = "✔️ Đã xóa sale khỏi sản phẩm!";
-    header("Location: khuyenmai.php"); exit;
+    echo "<script>window.location.href = '/web_3/view/admin.php?section=khuyenmai';</script>"; exit;
 }
 ?>
 <!DOCTYPE html>
@@ -106,6 +174,7 @@ if (isset($_GET['remove_sale'])) {
   <meta charset="UTF-8">
   <title>Quản lý khuyến mãi</title>
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
   <style>
     body { background: #f6f6f7; }
     .form-section, .table-section {
@@ -138,7 +207,7 @@ if (isset($_GET['remove_sale'])) {
       background: #e8f0fe;
       color: #1d8cf8;
     }
-    .table-section h5, .form-section h4 {
+.table-section h5, .form-section h4 {
       font-weight: 600;
       letter-spacing: 0.5px;
       margin-bottom: 18px;
@@ -232,7 +301,7 @@ if (isset($_GET['remove_sale'])) {
       <div class="alert alert-danger alert-fixed" id="alert-msg"><?= $alert ?></div>
     <?php endif; ?>
     <?php if (!empty($_SESSION['alert_success'])): ?>
-      <div class="alert alert-success alert-fixed" id="alert-msg"><?= $_SESSION['alert_success']; unset($_SESSION['alert_success']); ?></div>
+<div class="alert alert-success alert-fixed" id="alert-msg"><?= $_SESSION['alert_success']; unset($_SESSION['alert_success']); ?></div>
     <?php endif; ?>
 
     <!-- FORM CHƯƠNG TRÌNH KHUYẾN MÃI -->
@@ -243,6 +312,9 @@ if (isset($_GET['remove_sale'])) {
         </li>
         <li class="nav-item" role="presentation">
           <button class="nav-link" id="assign-tab" data-bs-toggle="tab" data-bs-target="#assign" type="button" role="tab">Gán Sale</button>
+        </li>
+        <li class="nav-item" role="presentation">
+          <button class="nav-link" id="products-tab" data-bs-toggle="tab" data-bs-target="#products" type="button" role="tab">Danh sách SP</button>
         </li>
       </ul>
       <div class="tab-content" id="saleTabContent">
@@ -286,14 +358,20 @@ if (isset($_GET['remove_sale'])) {
               <label class="form-label">Chương trình KM</label>
               <select name="mactkm" class="form-select" required>
                 <option value="">-- Chọn chương trình --</option>
-                <?php foreach($chuongtrinhkm as $ctkm): ?>
+<?php foreach($chuongtrinhkm as $ctkm): ?>
                   <option value="<?= $ctkm['MACTKM'] ?>"><?= htmlspecialchars($ctkm['TENCTKM']) ?></option>
                 <?php endforeach; ?>
               </select>
             </div>
-            <div class="col-md-2">
+            <div class="col-md-3">
               <label class="form-label">Mã sản phẩm</label>
               <input name="masp" class="form-control" required placeholder="VD: SP001A">
+              <div class="form-check mt-2">
+                <input class="form-check-input" type="checkbox" value="1" id="apply_group_color" name="apply_group_color">
+                <label class="form-check-label" for="apply_group_color">
+                  Áp dụng cho tất cả size của cùng màu
+                </label>
+              </div>
             </div>
             <div class="col-md-2">
               <label class="form-label">Loại giảm giá</label>
@@ -310,10 +388,118 @@ if (isset($_GET['remove_sale'])) {
               <label class="form-label">Giảm (%)</label>
               <input name="giam_phantram" type="number" class="form-control" min="1" max="99">
             </div>
-            <div class="col-md-1 d-flex align-items-end">
+            <div class="col-md-2">
+              <label class="form-label invisible">Hành động</label>
               <button class="btn btn-success w-100">Gán Sale</button>
             </div>
+            
           </form>
+        </div>
+        
+        <!-- Danh sách tất cả sản phẩm -->
+        <div class="tab-pane fade" id="products" role="tabpanel">
+          <h4>Danh sách tất cả sản phẩm</h4>
+          <div class="row mb-3">
+            <div class="col-md-4">
+              <input type="text" id="searchProduct" class="form-control" placeholder="🔍 Tìm kiếm theo tên hoặc mã sản phẩm...">
+            </div>
+            <div class="col-md-3">
+              <select id="filterSaleStatus" class="form-select">
+                <option value="">-- Tất cả trạng thái --</option>
+                <option value="active_sale">Đang diễn ra</option>
+                <option value="future_sale">Sắp diễn ra</option>
+                <option value="expired_sale">Đã kết thúc</option>
+                <option value="no_sale">Chưa có sale</option>
+              </select>
+            </div>
+          </div>
+          <div class="table-responsive">
+            <table class="table table-striped table-hover align-middle" id="productsTable">
+              <thead>
+                <tr>
+                  <th>Mã SP</th>
+                  <th>Tên sản phẩm</th>
+                  <th>Màu / Size</th>
+                  <th>Giá gốc</th>
+                  <th>Giá sale</th>
+                  <th>Chương trình</th>
+                  <th>Tồn kho</th>
+                  <th>Thao tác</th>
+                </tr>
+              </thead>
+              <tbody>
+                <?php foreach($all_products as $product): ?>
+        <tr class="product-row" 
+          data-name="<?= htmlspecialchars($product['TENSP']) ?>" 
+          data-code="<?= htmlspecialchars($product['MASP']) ?>"
+          data-sale-status="<?= htmlspecialchars($product['sale_status'] ?? 'no_sale') ?>">
+                  <td><code><?= htmlspecialchars($product['MASP']) ?></code></td>
+                  <td><?= htmlspecialchars($product['TENSP']) ?></td>
+                  <td>
+                    <span class="badge bg-secondary"><?= htmlspecialchars($product['MAUSAC']) ?></span>
+                    <span class="badge bg-info"><?= htmlspecialchars($product['KICHTHUOC']) ?></span>
+                  </td>
+                  <td><span class="price-original"><?= number_format($product['GIA']) ?>đ</span></td>
+                  <td>
+                    <?php if ($product['TENCTKM']): ?>
+                      <span class="price-sale">
+                        <?php 
+                          if ($product['gia_khuyenmai']) {
+                            echo number_format($product['gia_khuyenmai']) . 'đ';
+                          } else {
+                            $gia_sale = $product['GIA'] * (1 - $product['giam_phantram']/100);
+                            echo number_format($gia_sale) . 'đ <span class="badge bg-warning ms-1">-' . $product['giam_phantram'] . '%</span>';
+                          }
+                        ?>
+                      </span>
+                    <?php else: ?>
+                      <span class="text-muted">Chưa sale</span>
+                    <?php endif; ?>
+                  </td>
+                  <td>
+                    <?php 
+                      $status = $product['sale_status'] ?? 'no_sale';
+                      $badgeClass = [
+                        'active_sale' => 'bg-success',
+                        'future_sale' => 'bg-warning',
+                        'expired_sale' => 'bg-dark',
+                        'no_sale' => 'bg-secondary',
+                      ][$status];
+                      $statusText = [
+                        'active_sale' => 'Đang diễn ra',
+                        'future_sale' => 'Sắp diễn ra',
+                        'expired_sale' => 'Đã kết thúc',
+                        'no_sale' => 'Chưa có',
+                      ][$status];
+                    ?>
+                    <?php if ($product['TENCTKM']): ?>
+                      <span class="badge bg-primary me-1"><?= htmlspecialchars($product['TENCTKM']) ?></span>
+                    <?php endif; ?>
+                    <span class="badge <?= $badgeClass ?>"><?= $statusText ?></span>
+                  </td>
+                  <td>
+                    <span class="badge <?= $product['SOLUONG'] > 0 ? 'bg-success' : 'bg-danger' ?>">
+                      <?= $product['SOLUONG'] ?>
+                    </span>
+                  </td>
+                  <td>
+                    <?php if ($product['TENCTKM']): ?>
+                      <a href="/web_3/view/admin.php?section=khuyenmai&remove_sale=<?= $product['MASP'] ?>&mactkm=<?= $product['MACTKM'] ?>"
+                         class="btn btn-sm btn-danger"
+                         onclick="return confirm('Bạn có chắc muốn xóa sale khỏi sản phẩm này?')">
+                        Xóa Sale
+                      </a>
+                    <?php else: ?>
+                      <button class="btn btn-sm btn-success" onclick="assignSaleQuick('<?= $product['MASP'] ?>')">
+                        Gán Sale
+                      </button>
+                    <?php endif; ?>
+                  </td>
+                </tr>
+                <?php endforeach; ?>
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
     </div>
@@ -353,10 +539,10 @@ if (isset($_GET['remove_sale'])) {
                   }
                 ?>
               </td>
-              <td><?= htmlspecialchars($ctkm['MOTA'] ?? '') ?></td>
+<td><?= htmlspecialchars($ctkm['MOTA'] ?? '') ?></td>
               <td>
-                <a href="?edit_sale=<?= $ctkm['MACTKM'] ?>" class="btn btn-sm btn-warning me-1">Sửa</a>
-                <a href="?delete_sale=<?= $ctkm['MACTKM'] ?>" class="btn btn-sm btn-danger"
+                <a href="/web_3/view/admin.php?section=khuyenmai&edit_sale=<?= $ctkm['MACTKM'] ?>" class="btn btn-sm btn-warning me-1">Sửa</a>
+                <a href="/web_3/view/admin.php?section=khuyenmai&delete_sale=<?= $ctkm['MACTKM'] ?>" class="btn btn-sm btn-danger"
                   onclick="return confirm('Bạn có chắc muốn xóa chương trình này?')">Xóa</a>
               </td>
             </tr>
@@ -399,7 +585,7 @@ if (isset($_GET['remove_sale'])) {
               </td>
               <td><span class="badge bg-primary"><?= htmlspecialchars($sp_sale['TENCTKM']) ?></span></td>
               <td>
-                <a href="?remove_sale=<?= $sp_sale['MASP'] ?>&mactkm=<?= $sp_sale['MACTKM'] ?>"
+                <a href="/web_3/view/admin.php?section=khuyenmai&remove_sale=<?= $sp_sale['MASP'] ?>&mactkm=<?= $sp_sale['MACTKM'] ?>"
                    class="btn btn-sm btn-danger"
                    onclick="return confirm('Bạn có chắc muốn xóa sale khỏi sản phẩm này?')">
                   Xóa Sale
@@ -423,7 +609,7 @@ function toggleSaleInputs() {
   const saleType = document.querySelector('select[name="sale_type"]').value;
   const fixedInput = document.getElementById('fixed-price-input');
   const percentInput = document.getElementById('percent-input');
-  if (saleType === 'fixed') {
+if (saleType === 'fixed') {
     fixedInput.style.display = 'block';
     percentInput.style.display = 'none';
   } else {
@@ -431,6 +617,43 @@ function toggleSaleInputs() {
     percentInput.style.display = 'block';
   }
 }
+
+// Tìm kiếm và filter sản phẩm
+function filterProducts() {
+  const searchTerm = document.getElementById('searchProduct').value.toLowerCase();
+  const saleStatus = document.getElementById('filterSaleStatus').value;
+  const rows = document.querySelectorAll('.product-row');
+  
+  rows.forEach(row => {
+    const productName = row.dataset.name.toLowerCase();
+    const productCode = row.dataset.code.toLowerCase();
+  const productSaleStatus = row.dataset.saleStatus || 'no_sale';
+    
+    const matchesSearch = productName.includes(searchTerm) || productCode.includes(searchTerm);
+    const matchesStatus = !saleStatus || productSaleStatus === saleStatus;
+    
+    if (matchesSearch && matchesStatus) {
+      row.style.display = '';
+    } else {
+      row.style.display = 'none';
+    }
+  });
+}
+
+// Gán sale nhanh
+function assignSaleQuick(masp) {
+  // Chuyển sang tab gán sale và điền sẵn mã sản phẩm
+  const assignTab = document.getElementById('assign-tab');
+  const assignTabPane = new bootstrap.Tab(assignTab);
+  assignTabPane.show();
+  
+  // Điền mã sản phẩm
+  setTimeout(() => {
+    document.querySelector('input[name="masp"]').value = masp;
+    document.querySelector('input[name="masp"]').focus();
+  }, 100);
+}
+
 // Auto ẩn alert sau 2s
 window.onload = function() {
   var alert = document.getElementById('alert-msg');
@@ -440,6 +663,10 @@ window.onload = function() {
       setTimeout(() => alert.style.display = 'none', 600);
     }, 2200);
   }
+  
+  // Thêm event listeners cho tìm kiếm và filter
+  document.getElementById('searchProduct')?.addEventListener('input', filterProducts);
+  document.getElementById('filterSaleStatus')?.addEventListener('change', filterProducts);
 }
 </script>
 </body>

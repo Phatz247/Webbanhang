@@ -1,6 +1,11 @@
 <?php
 // view/product_detail.php
 
+// Khởi động session trước tiên
+if (session_status() === PHP_SESSION_NONE) {
+    session_start();
+}
+
 require_once __DIR__ . '/../model/database.php';
 $db   = new database();
 $conn = $db->getConnection();
@@ -12,11 +17,11 @@ if (!$masp) {
 }
 
 // 2) Lấy thông tin sản phẩm chính
-$stmt = $conn->prepare("SELECT * FROM sanpham WHERE MASP = ?");
+$stmt = $conn->prepare("SELECT * FROM sanpham WHERE MASP = ? AND IS_DELETED = 0");
 $stmt->execute([$masp]);
 $sp = $stmt->fetch(PDO::FETCH_ASSOC);
 if (!$sp) {
-    die('Sản phẩm không tồn tại.');
+    die('Sản phẩm không tồn tại hoặc đã bị ẩn.');
 }
 
 // 3) Xác định danh mục để quyết định size list
@@ -32,7 +37,7 @@ switch ($sp['MADM']) {
 }
 
 // 4) Lấy tất cả biến thể cùng GROUPSP để build picker màu
-$stmt2 = $conn->prepare("SELECT * FROM sanpham WHERE GROUPSP = ? ORDER BY MASP");
+$stmt2 = $conn->prepare("SELECT * FROM sanpham WHERE GROUPSP = ? AND IS_DELETED = 0 ORDER BY MASP");
 $stmt2->execute([$sp['GROUPSP']]);
 $all = $stmt2->fetchAll(PDO::FETCH_ASSOC);
 $list_colors = [];
@@ -56,7 +61,7 @@ foreach ($list_colors as $c) {
         $stmt3 = $conn->prepare("
             SELECT MASP, SOLUONG
             FROM sanpham
-            WHERE TENSP = ? AND MAUSAC = ?
+            WHERE TENSP = ? AND MAUSAC = ? AND IS_DELETED = 0
         ");
         $stmt3->execute([$sp['TENSP'], $color]);
         $row = $stmt3->fetch(PDO::FETCH_ASSOC);
@@ -67,7 +72,7 @@ foreach ($list_colors as $c) {
             $stmt3 = $conn->prepare("
                 SELECT MASP, SOLUONG
                 FROM sanpham
-                WHERE TENSP = ? AND MAUSAC = ? AND KICHTHUOC = ?
+                WHERE TENSP = ? AND MAUSAC = ? AND KICHTHUOC = ? AND IS_DELETED = 0
             ");
             $stmt3->execute([$sp['TENSP'], $color, $sz]);
             $row = $stmt3->fetch(PDO::FETCH_ASSOC);
@@ -140,6 +145,18 @@ function getPriceInfo($originalPrice, $saleData) {
     
     return $result;
 }
+
+// 8) Ảnh chi tiết theo GROUPSP (bảng tiếng Việt: hinhanh_sanpham)
+$detailImgs = [];
+try {
+  $stmtImgs = $conn->prepare("SELECT TENFILE FROM hinhanh_sanpham WHERE GROUPSP = ? ORDER BY THUTU ASC, ID ASC");
+  $stmtImgs->execute([$sp['GROUPSP']]);
+  $detailImgs = $stmtImgs->fetchAll(PDO::FETCH_COLUMN);
+  // Loại trùng theo tên file nếu có
+  $detailImgs = array_values(array_unique($detailImgs));
+} catch (Exception $e) {
+  // table có thể chưa tồn tại, bỏ qua an toàn
+}
 ?>
 <!DOCTYPE html>
 <html lang="vi">
@@ -155,6 +172,34 @@ function getPriceInfo($originalPrice, $saleData) {
     .product-section { display:flex; gap:40px; flex-wrap:wrap; }
     .product-images, .product-info { flex:1; min-width:300px; }
     .main-image img { width:100%; border-radius:8px; }
+    .product-images { position: relative; }
+    /* Thumbnail gallery bottom-left */
+    .thumbs-container {
+      position: absolute;
+      left: 10px;
+      bottom: 10px;
+      display: flex;
+      gap: 8px;
+      background: rgba(255,255,255,0.8);
+      padding: 6px;
+      border-radius: 8px;
+      backdrop-filter: blur(2px);
+    }
+    .thumbs-container .thumb {
+      width: 52px;
+      height: 52px;
+      object-fit: cover;
+      border-radius: 6px;
+      border: 2px solid transparent;
+      cursor: pointer;
+      transition: transform 0.15s ease, border-color 0.15s ease;
+    }
+    .thumbs-container .thumb:hover { transform: scale(1.05); border-color: #dc3545; }
+    .thumbs-container .thumb.selected { border-color: #dc3545; }
+  /* Dải thumbnail hình chi tiết riêng (không đổi màu) */
+  .thumbs-detail-container { position:absolute; left:10px; bottom:10px; display:flex; gap:8px; background:rgba(255,255,255,0.85); padding:6px; border-radius:8px; }
+  .thumbs-detail-container .thumb { width:52px; height:52px; object-fit:cover; border-radius:6px; border:2px solid transparent; cursor:pointer; transition:transform .15s ease, border-color .15s ease; }
+  .thumbs-detail-container .thumb:hover { transform:scale(1.05); border-color:#198754; }
     .current-price { font-size:24px; color:#dc3545; margin:10px 0; }
     .old-price { text-decoration:line-through; color:#888; margin-right:8px; }
     .sale-price { color:#d00; font-weight:bold; }
@@ -162,6 +207,9 @@ function getPriceInfo($originalPrice, $saleData) {
     .promotion-name { color:#27ae60; font-size:13px; font-style:italic; margin-top:5px; }
     .option-group { margin-bottom:20px; }
     .option-group label { display:block; font-weight:500; margin-bottom:6px; }
+    .size-row { display:flex; align-items:center; gap:10px; }
+    .size-guide-btn { background:#27ae60; color:white; border:none; padding:6px 12px; border-radius:4px; cursor:pointer; font-size:12px; }
+    .size-guide-btn:hover { background:#229954; }
     select, input[type="number"] { padding:6px; border:1px solid #ddd; border-radius:4px; width:100%; max-width:200px; }
     .action-buttons { display:flex; gap:10px; margin-top:20px; }
     .action-buttons .btn { flex:1; padding:12px; font-size:16px; border:none; border-radius:6px; cursor:pointer; color:#fff; }
@@ -208,6 +256,80 @@ function getPriceInfo($originalPrice, $saleData) {
         font-size: 16px;
       }
     }
+    
+    /* Styles cho Size Guide Modal */
+    .size-guide-modal {
+      display: none;
+      position: fixed;
+      z-index: 1000;
+      left: 0;
+      top: 0;
+      width: 100%;
+      height: 100%;
+      background-color: rgba(0,0,0,0.5);
+    }
+    .size-guide-content {
+      background-color: white;
+      margin: 5% auto;
+      padding: 20px;
+      border-radius: 10px;
+      width: 90%;
+      max-width: 600px;
+      max-height: 80%;
+      overflow-y: auto;
+    }
+    .size-guide-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 20px;
+      border-bottom: 2px solid #27ae60;
+      padding-bottom: 10px;
+    }
+    .size-guide-title {
+      color: #27ae60;
+      font-size: 20px;
+      font-weight: 600;
+      margin: 0;
+    }
+    .close-modal {
+      background: none;
+      border: none;
+      font-size: 24px;
+      cursor: pointer;
+      color: #666;
+    }
+    .close-modal:hover {
+      color: #333;
+    }
+    .size-table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 15px;
+    }
+    .size-table th,
+    .size-table td {
+      border: 1px solid #ddd;
+      padding: 10px;
+      text-align: center;
+    }
+    .size-table th {
+      background-color: #27ae60;
+      color: white;
+      font-weight: 600;
+    }
+    .size-table tr:nth-child(even) {
+      background-color: #f8f9fa;
+    }
+    .size-note {
+      color: #666;
+      font-style: italic;
+      margin-top: 15px;
+      padding: 10px;
+      background-color: #f0f8ff;
+      border-left: 4px solid #27ae60;
+      border-radius: 4px;
+    }
   </style>
 </head>
 <body>
@@ -230,6 +352,30 @@ function getPriceInfo($originalPrice, $saleData) {
                src="/web_3/view/uploads/<?= htmlspecialchars($sp['HINHANH']) ?>"
                alt="<?= htmlspecialchars($sp['TENSP']) ?>">
         </div>
+        <?php if (!empty($detailImgs)): ?>
+        <!-- Thumbnail ảnh chi tiết: chỉ xem trước, không thay đổi lựa chọn màu -->
+        <div class="thumbs-detail-container" id="detailThumbs">
+          <?php foreach ($detailImgs as $f): ?>
+            <img class="thumb" src="/web_3/view/uploads/<?= htmlspecialchars($f) ?>" data-img="<?= htmlspecialchars($f) ?>" alt="Chi tiết">
+          <?php endforeach; ?>
+        </div>
+        <?php endif; ?>
+        <?php if (empty($detailImgs)): ?>
+          <!-- Thumbnail theo màu (hover để xem, click để chọn màu) -->
+          <div class="thumbs-container" id="thumbs">
+            <?php foreach ($list_colors as $c): ?>
+              <img
+                class="thumb<?= $c['MASP']==$sp['MASP'] ? ' selected' : '' ?>"
+                src="/web_3/view/uploads/<?= htmlspecialchars($c['HINHANH']) ?>"
+                alt="<?= htmlspecialchars($c['MAUSAC']) ?>"
+                title="<?= htmlspecialchars($c['MAUSAC']) ?>"
+                data-masp="<?= htmlspecialchars($c['MASP']) ?>"
+                data-img="<?= htmlspecialchars($c['HINHANH']) ?>"
+                data-color="<?= htmlspecialchars($c['MAUSAC']) ?>"
+              />
+            <?php endforeach; ?>
+          </div>
+        <?php endif; ?>
       </div>
 
       <!-- Thông tin & form -->
@@ -270,15 +416,23 @@ function getPriceInfo($originalPrice, $saleData) {
           <?php if (!empty($sizes)): ?>
           <div class="option-group">
             <label for="size-select">Kích thước:</label>
-            <select name="kichthuoc" id="size-select" required>
-              <option value="" disabled selected>-- Chọn size --</option>
-              <?php foreach ($sizes as $sz):
-                $qty = isset($full_stock[$sp['MAUSAC']][$sz]) ? (int)$full_stock[$sp['MAUSAC']][$sz] : 0; ?>
-                <option value="<?= htmlspecialchars($sz) ?>" <?= $qty <= 0 ? 'disabled' : '' ?>>
-                  <?= htmlspecialchars($sz) ?><?= $qty <= 0 ? ' (Hết hàng)' : '' ?>
-                </option>
-              <?php endforeach; ?>
-            </select>
+            <div class="size-row">
+              <select name="kichthuoc" id="size-select" required>
+                <option value="" disabled selected>-- Chọn size --</option>
+                <?php foreach ($sizes as $sz):
+                  $qty = isset($full_stock[$sp['MAUSAC']][$sz]) ? (int)$full_stock[$sp['MAUSAC']][$sz] : 0; ?>
+                  <option value="<?= htmlspecialchars($sz) ?>" <?= $qty <= 0 ? 'disabled' : '' ?>>
+                    <?= htmlspecialchars($sz) ?><?= $qty <= 0 ? ' (Hết hàng)' : '' ?>
+                  </option>
+                <?php endforeach; ?>
+              </select>
+              <button type="button" class="size-guide-btn" onclick="showSizeGuide('<?= $sp['MADM'] ?>')">
+                <i class="fas fa-ruler"></i> Hướng dẫn size
+              </button>
+              <a href="/web_3/view/size.php" target="_blank" style="color: #27ae60; font-size: 12px; text-decoration: none; margin-left: 5px;" title="Xem trang hướng dẫn chi tiết">
+                <i class="fas fa-external-link-alt"></i>
+              </a>
+            </div>
           </div>
           <?php else: ?>
           <!-- Phụ kiện - Freesize ẩn -->
@@ -314,6 +468,28 @@ function getPriceInfo($originalPrice, $saleData) {
     </div>
   </div>
 
+  <!-- Size Guide Modal -->
+  <div id="sizeGuideModal" class="size-guide-modal">
+    <div class="size-guide-content">
+      <div class="size-guide-header">
+        <h3 class="size-guide-title" id="sizeGuideTitle">Hướng dẫn chọn size</h3>
+        <button class="close-modal" onclick="closeSizeGuide()">&times;</button>
+      </div>
+      
+      <div id="sizeGuideBody">
+        <!-- Size guide content will be populated by JavaScript -->
+      </div>
+      
+      <div class="size-note">
+        <strong>Lưu ý:</strong> Thông số chỉ mang tính tham khảo, bạn nên thử sản phẩm để chọn size phù hợp nhất.
+        <br><br>
+        <a href="/web_3/view/size.php" target="_blank" style="color: #27ae60; text-decoration: underline; font-weight: 600;">
+          <i class="fas fa-external-link-alt"></i> Xem hướng dẫn chi tiết về MENSTA
+        </a>
+      </div>
+    </div>
+  </div>
+
   <?php include __DIR__ . '/upload/footer.php'; ?>
 
   <script>
@@ -340,6 +516,121 @@ let stockByColor   = fullStock[currentColor] || {};
     const stockInfo    = document.getElementById('stock-info');
     const priceDisplay = document.getElementById('price-display');
     const promotionDisplay = document.getElementById('promotion-display');
+  const thumbsContainer = document.getElementById('thumbs');
+  const detailThumbs = document.getElementById('detailThumbs');
+
+    // Size guide functionality
+    function showSizeGuide(category) {
+      const modal = document.getElementById('sizeGuideModal');
+      const title = document.getElementById('sizeGuideTitle');
+      const body = document.getElementById('sizeGuideBody');
+      
+      if (category === 'DM001') { // Áo
+        title.textContent = 'Bảng size Áo Nam';
+        body.innerHTML = `
+          <table class="size-table">
+            <tr>
+              <th>SIZE</th>
+              <th>S (45-60kg)</th>
+              <th>M (60-75kg)</th>
+              <th>L (75-90kg)</th>
+              <th>XL (90-105kg)</th>
+            </tr>
+            <tr>
+              <td><strong>VAI</strong></td>
+              <td>50cm</td>
+              <td>52cm</td>
+              <td>54cm</td>
+              <td>56cm</td>
+            </tr>
+            <tr>
+              <td><strong>TAY</strong></td>
+              <td>22cm</td>
+              <td>23cm</td>
+              <td>24cm</td>
+              <td>25cm</td>
+            </tr>
+            <tr>
+              <td><strong>DÀI</strong></td>
+              <td>69cm</td>
+              <td>71cm</td>
+              <td>73cm</td>
+              <td>75cm</td>
+            </tr>
+            <tr>
+              <td><strong>RỘNG</strong></td>
+              <td>57cm</td>
+              <td>59cm</td>
+              <td>61cm</td>
+              <td>63cm</td>
+            </tr>
+          </table>
+        `;
+      } else if (category === 'DM002') { // Quần
+        title.textContent = 'Bảng size Quần Nam';
+        body.innerHTML = `
+          <table class="size-table">
+            <tr>
+              <th>SIZE</th>
+              <th>CHIỀU CAO</th>
+              <th>CÂN NẶNG</th>
+            </tr>
+            <tr>
+              <td><strong>29</strong></td>
+              <td>Dưới 1m65</td>
+              <td>55kg - 60kg</td>
+            </tr>
+            <tr>
+              <td><strong>30</strong></td>
+              <td>1m65 - 1m72</td>
+              <td>60kg - 65kg</td>
+            </tr>
+            <tr>
+              <td><strong>31</strong></td>
+              <td>1m65 - 1m80</td>
+              <td>66kg - 71kg</td>
+            </tr>
+            <tr>
+              <td><strong>32</strong></td>
+              <td>1m70 - 1m85</td>
+              <td>72kg - 76kg</td>
+            </tr>
+            <tr>
+              <td><strong>34</strong></td>
+              <td>1m70 - 1m85</td>
+              <td>76kg - 82kg</td>
+            </tr>
+          </table>
+        `;
+      }
+      
+      modal.style.display = 'block';
+      document.body.style.overflow = 'hidden'; // Prevent background scrolling
+    }
+
+    function closeSizeGuide() {
+      const modal = document.getElementById('sizeGuideModal');
+      modal.style.display = 'none';
+      document.body.style.overflow = 'auto'; // Restore scrolling
+    }
+
+    // Close modal when clicking outside
+    window.onclick = function(event) {
+      const modal = document.getElementById('sizeGuideModal');
+      if (event.target === modal) {
+        closeSizeGuide();
+      }
+    }
+
+    // Close modal with Escape key
+    document.addEventListener('keydown', function(event) {
+      if (event.key === 'Escape') {
+        const modal = document.getElementById('sizeGuideModal');
+        if (modal.style.display === 'block') {
+          closeSizeGuide();
+        }
+      }
+    });
 
     function isSaleActive(sale) {
         return sale && sale.promotion_active == 1;
@@ -450,6 +741,11 @@ priceDisplay.innerHTML = `${Number(gia).toLocaleString()} ₫`;
                 .forEach(i=>i.classList.remove('selected'));
         el.classList.add('selected');
 
+  // Sync selected state on thumbnails
+  document.querySelectorAll('#thumbs .thumb').forEach(t => t.classList.remove('selected'));
+  const selectedThumb = document.querySelector(`#thumbs .thumb[data-masp="${el.dataset.masp}"]`);
+  if (selectedThumb) selectedThumb.classList.add('selected');
+
         imgEl.src       = '/web_3/view/uploads/'+el.dataset.hinhanh;
         fieldImg.value  = el.dataset.hinhanh;
         fieldColor.value= el.dataset.mausac;
@@ -497,6 +793,52 @@ const masp = currentMaspMap[sz];
         }
       });
     });
+
+    // Thumbnail hover to preview, click to select color
+    if (thumbsContainer) {
+      const revertToSelected = () => {
+        // Revert preview to currently selected image when leaving the thumbnail area
+        if (fieldImg && fieldImg.value) {
+          imgEl.src = '/web_3/view/uploads/' + fieldImg.value;
+        }
+      };
+      thumbsContainer.addEventListener('mouseleave', revertToSelected);
+      thumbsContainer.querySelectorAll('.thumb').forEach(thumb => {
+        thumb.addEventListener('mouseenter', () => {
+          const img = thumb.dataset.img;
+          if (img) imgEl.src = '/web_3/view/uploads/' + img;
+        });
+        thumb.addEventListener('click', () => {
+          const masp = thumb.dataset.masp;
+          const target = document.querySelector(`#color-picker .color-option[data-masp="${masp}"]`);
+          if (target) target.click();
+        });
+      });
+    }
+
+    // Thumbnail ảnh chi tiết: hover để xem trước, click để cố định ảnh chính, không đổi màu/biến thể
+    if (detailThumbs) {
+      const revertToSelectedMain = () => {
+        if (fieldImg && fieldImg.value) {
+          imgEl.src = '/web_3/view/uploads/' + fieldImg.value;
+        }
+      };
+      detailThumbs.addEventListener('mouseleave', revertToSelectedMain);
+      detailThumbs.querySelectorAll('.thumb').forEach(t => {
+        t.addEventListener('mouseenter', () => {
+          const img = t.dataset.img;
+          if (img) imgEl.src = '/web_3/view/uploads/' + img;
+        });
+        t.addEventListener('click', () => {
+          const img = t.dataset.img;
+          if (img) {
+            imgEl.src = '/web_3/view/uploads/' + img;
+            // Cập nhật fieldImg để khi rời chuột không revert lại
+            fieldImg.value = img;
+          }
+        });
+      });
+    }
 
     if (sizeSelect) {
       sizeSelect.addEventListener('change', refresh);

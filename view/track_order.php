@@ -16,6 +16,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['confirm_done']) && !e
     $madonhang = $_POST['madonhang'];
     $stmt = $conn->prepare("UPDATE donhang SET is_confirmed = 1, TRANGTHAI = 'Đã hoàn thành' WHERE MADONHANG = ?");
     $stmt->execute([$madonhang]);
+    // Đồng bộ giao hàng: coi như đã giao
+    $stmt = $conn->prepare("UPDATE giaohang SET TRANGTHAIGH = 'Đã giao', NGAYGIAO = COALESCE(NGAYGIAO, NOW()), NGAYCAPNHAT = NOW() WHERE MADONHANG = ?");
+    $stmt->execute([$madonhang]);
     header("Location: ?order_code=" . urlencode($madonhang));
     exit;
 }
@@ -25,6 +28,9 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['auto_done']) && !empt
     $madonhang = $_POST['madonhang'];
     // Chỉ update nếu trạng thái là "Đang giao hàng" và chưa xác nhận
     $stmt = $conn->prepare("UPDATE donhang SET TRANGTHAI = 'Đã giao hàng' WHERE MADONHANG = ? AND TRANGTHAI = 'Đang giao hàng' AND is_confirmed = 0");
+    $stmt->execute([$madonhang]);
+    // Đồng bộ giao hàng: đánh dấu đã giao nếu đơn chuyển sang đã giao hàng
+    $stmt = $conn->prepare("UPDATE giaohang SET TRANGTHAIGH = 'Đã giao', NGAYGIAO = COALESCE(NGAYGIAO, NOW()), NGAYCAPNHAT = NOW() WHERE MADONHANG = ?");
     $stmt->execute([$madonhang]);
     echo "ok";
     exit;
@@ -70,13 +76,25 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' || isset($_GET['order_code'])) {
                         COALESCE(sp.HINHANH, 'no-image.jpg') as HINHANH,
                         COALESCE(sp.MAUSAC, 'Không xác định') as MAUSAC
                     FROM chitietdonhang ct
-                    LEFT JOIN sanpham sp ON ct.MASP = sp.MASP
+LEFT JOIN sanpham sp ON ct.MASP = sp.MASP
                     WHERE ct.MADONHANG = ?
                     ORDER BY ct.MASP
                 ";
                 $items_stmt = $conn->prepare($items_query);
                 $items_stmt->execute([$order_code]);
                 $order_items = $items_stmt->fetchAll(PDO::FETCH_ASSOC);
+                
+                // Lấy thông tin giao hàng
+                $delivery_query = "
+                    SELECT gh.*
+                    FROM giaohang gh
+                    WHERE gh.MADONHANG = ?
+                    ORDER BY gh.NGAYTAO DESC
+                    LIMIT 1
+                ";
+                $delivery_stmt = $conn->prepare($delivery_query);
+                $delivery_stmt->execute([$order_code]);
+                $delivery_info = $delivery_stmt->fetch(PDO::FETCH_ASSOC);
             }
         } catch (PDOException $e) {
             $error_message = 'Lỗi cơ sở dữ liệu: ' . $e->getMessage();
@@ -107,7 +125,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' || isset($_GET['order_code'])) {
         .search-form h3 { margin-bottom: 20px; color: #2c3e50; font-size: 20px; }
         .form-row { display: grid; grid-template-columns: 1fr 1fr auto; gap: 15px; align-items: end; }
         .form-group { display: flex; flex-direction: column; }
-        .form-label { font-weight: 500; margin-bottom: 8px; color: #555; font-size: 14px; }
+.form-label { font-weight: 500; margin-bottom: 8px; color: #555; font-size: 14px; }
         .form-control { padding: 12px 15px; border: 1px solid #ddd; border-radius: 8px; font-size: 15px; }
         .form-control:focus { border-color: #3498db; box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.2); outline: none; }
         .btn { padding: 12px 20px; border: none; border-radius: 8px; cursor: pointer; font-size: 15px; font-weight: 500; display: inline-flex; align-items: center; gap: 10px; }
@@ -145,7 +163,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' || isset($_GET['order_code'])) {
         
         .order-details { display: grid; grid-template-columns: 1fr 1fr; gap: 30px; margin-bottom: 30px; }
         .detail-section { background: #f8f9fc; padding: 20px; border-radius: 8px; }
-        .detail-section h4 { color: #2c3e50; margin-bottom: 15px; font-size: 16px; }
+.detail-section h4 { color: #2c3e50; margin-bottom: 15px; font-size: 16px; }
         .detail-item { display: flex; justify-content: space-between; margin-bottom: 10px; font-size: 14px; }
         .detail-label { color: #7f8c8d; }
         .detail-value { font-weight: 500; color: #2c3e50; }
@@ -204,7 +222,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' || isset($_GET['order_code'])) {
 <body>
 <?php if ($order && $order['TRANGTHAI'] == 'Đang giao hàng' && !$order['is_confirmed']): ?>
 <script>
-    setTimeout(function(){
+setTimeout(function(){
         fetch('auto_update.php', {
     method: 'POST',
     headers: {'Content-Type': 'application/x-www-form-urlencoded'},
@@ -215,7 +233,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' || isset($_GET['order_code'])) {
         .then(function(res){
             if (res.trim() === 'ok') location.reload();
         });
-    }, 60000);
+    }, 10000);
 </script>
 <?php endif; ?>
 <div class="container">
@@ -271,7 +289,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' || isset($_GET['order_code'])) {
                         case 'Đang xử lý': echo 'status-processing'; break;
                         case 'Đang giao hàng': echo 'status-shipping'; break;
                         case 'Đã giao hàng': echo 'status-delivered'; break;
-                        case 'Đã hoàn thành': echo 'status-delivered'; break;
+case 'Đã hoàn thành': echo 'status-delivered'; break;
                         case 'Đã hủy': echo 'status-cancelled'; break;
                     }
                 ?>">
@@ -323,7 +341,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' || isset($_GET['order_code'])) {
             <!-- Chi tiết đơn hàng -->
             <div class="order-details">
                 <div class="detail-section">
-                    <h4><i class="fas fa-user"></i> Thông tin người nhận</h4>
+<h4><i class="fas fa-user"></i> Thông tin người nhận</h4>
                     <div class="detail-item">
                         <span class="detail-label">Họ và tên:</span>
                         <span class="detail-value"><?= htmlspecialchars($order['HOTEN']); ?></span>
@@ -361,6 +379,65 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' || isset($_GET['order_code'])) {
                     <?php endif; ?>
                 </div>
             </div>
+            
+            <!-- Thông tin giao hàng -->
+            <?php if ($delivery_info): ?>
+            <div class="order-info">
+                <div class="order-header">
+                    <div class="order-code">
+                        <i class="fas fa-truck"></i> Thông tin giao hàng
+                    </div>
+                </div>
+                
+                <div class="order-details">
+                    <div class="detail-section">
+                        <h4><i class="fas fa-shipping-fast"></i> Chi tiết giao hàng</h4>
+                        <div class="detail-item">
+                            <span class="detail-label">Mã giao hàng:</span>
+                            <span class="detail-value"><?= htmlspecialchars($delivery_info['MAGH']); ?></span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Ngày tạo:</span>
+                            <span class="detail-value"><?= date('d/m/Y H:i', strtotime($delivery_info['NGAYTAO'])); ?></span>
+                        </div>
+                        <?php if ($delivery_info['NGAYGIAO']): ?>
+                        <div class="detail-item">
+                            <span class="detail-label">Ngày giao:</span>
+                            <span class="detail-value"><?= date('d/m/Y H:i', strtotime($delivery_info['NGAYGIAO'])); ?></span>
+                        </div>
+                        <?php endif; ?>
+                        <div class="detail-item">
+                            <span class="detail-label">Phí vận chuyển:</span>
+                            <span class="detail-value" style="color: #28a745; font-weight: 600;">
+                                <?= number_format($delivery_info['PHIVANCHUYEN']); ?>đ
+</span>
+                        </div>
+                        <?php if (!empty($delivery_info['GHICHU_GH'])): ?>
+                        <div class="detail-item">
+                            <span class="detail-label">Ghi chú giao hàng:</span>
+                            <span class="detail-value"><?= htmlspecialchars($delivery_info['GHICHU_GH']); ?></span>
+                        </div>
+                        <?php endif; ?>
+                    </div>
+                    
+                    <div class="detail-section">
+                        <h4><i class="fas fa-map-marker-alt"></i> Địa chỉ & liên hệ</h4>
+                        <div class="detail-item">
+                            <span class="detail-label">Người nhận:</span>
+                            <span class="detail-value"><?= htmlspecialchars($delivery_info['TEN_NGUOINHAN']); ?></span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Số điện thoại:</span>
+                            <span class="detail-value"><?= htmlspecialchars($delivery_info['SDT_NHAN']); ?></span>
+                        </div>
+                        <div class="detail-item">
+                            <span class="detail-label">Địa chỉ giao hàng:</span>
+                            <span class="detail-value"><?= htmlspecialchars($delivery_info['DIACHIGIAO']); ?></span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            <?php endif; ?>
         </div>
         <!-- Danh sách sản phẩm -->
         <?php if (!empty($order_items)): ?>
@@ -382,9 +459,35 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST' || isset($_GET['order_code'])) {
                             <span>Đơn giá: <?= number_format($item['GIA']); ?>đ</span>
                             <span class="price">Thành tiền: <?= number_format($item['THANHTIEN']); ?>đ</span>
                         </div>
+                        
+                        <?php if ($order['TRANGTHAI'] == 'Đã giao hàng'): ?>
+                        <div class="item-actions mt-2">
+                            <?php
+                            // Include review management để sử dụng functions
+                            require_once __DIR__ . '/../controller/review_management.php';
+                            
+                            // Kiểm tra đã đánh giá chưa
+                            $hasReviewed = false;
+                            if (isset($_SESSION['MAKH'])) {
+                                $hasReviewed = hasCustomerReviewed($conn, $_SESSION['MAKH'], $item['MASP'], $order['MADONHANG']);
+                            }
+                            ?>
+                            
+                            <?php if ($hasReviewed): ?>
+                                <span class="badge bg-success me-2">
+                                    <i class="fas fa-check"></i> Đã đánh giá
+                                </span>
+                            <?php else: ?>
+                                <a href="review.php?masp=<?= $item['MASP'] ?>&mahd=<?= $order['MADONHANG'] ?>" 
+                                   class="btn btn-warning btn-sm">
+                                    <i class="fas fa-star"></i> Đánh giá
+                                </a>
+                            <?php endif; ?>
+                        </div>
+                        <?php endif; ?>
                     </div>
                 </div>
-                <?php endforeach; ?>
+<?php endforeach; ?>
                 <div class="order-summary">
                     <div class="summary-row">
                         <span>Số lượng sản phẩm:</span>

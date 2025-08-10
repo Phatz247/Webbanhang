@@ -3,22 +3,31 @@
 
 <!-- Or if you prefer inline in profile.php, add this script: -->
 <script>
-  // Inline checkout restoration helper for profile.php
+  // ✅ FIXED VERSION - Tránh dồn đơn cũ vào đơn mới
   function restoreCheckout() {
     const savedState = sessionStorage.getItem("checkout_state");
     if (savedState) {
       const checkoutState = JSON.parse(savedState);
 
-      // Check if state is still valid (within 30 minutes)
-      const thirtyMinutes = 30 * 60 * 1000;
-      if (Date.now() - checkoutState.timestamp < thirtyMinutes) {
+      // Check if state is still valid (giảm xuống 15 phút)
+      const fifteenMinutes = 15 * 60 * 1000;
+      if (Date.now() - checkoutState.timestamp < fifteenMinutes) {
+        // ⚠️ KIỂM TRA XEM CÁC SẢN PHẨM CÒN TỒN TẠI TRONG GIỎ HÀNG KHÔNG
+        if (!validateCheckoutItems(checkoutState.selected_items)) {
+          sessionStorage.removeItem("checkout_state");
+          alert(
+            "Giỏ hàng đã thay đổi! Vui lòng chọn lại sản phẩm để thanh toán."
+          );
+          window.location.href = "shoppingcart.php";
+          return false;
+        }
         // Redirect back to checkout with restoration data
         const form = document.createElement("form");
         form.method = "POST";
         form.action = "checkout.php";
         form.style.display = "none";
 
-        // Add selected items
+        // Add selected items (chỉ những items đã validate)
         checkoutState.selected_items.forEach((item) => {
           const input = document.createElement("input");
           input.type = "hidden";
@@ -26,6 +35,13 @@
           input.value = item;
           form.appendChild(input);
         });
+
+        // ✅ Add restore flag để phân biệt với checkout mới
+        const restoreInput = document.createElement("input");
+        restoreInput.type = "hidden";
+        restoreInput.name = "restore_from_profile";
+        restoreInput.value = "1";
+        form.appendChild(restoreInput);
 
         // Add other form data
         if (checkoutState.payment_method) {

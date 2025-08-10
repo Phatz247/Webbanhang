@@ -78,16 +78,17 @@
 <body>
 <div class="d-flex">
   <div class="sidebar d-flex flex-column p-3">
-    <h3 class="mb-4 text-center">Admin Panel</h3>
+    <h3 class="mb-4 text-center">Admin</h3>
    <ul class="nav nav-pills flex-column mb-auto">
 <li class="nav-item"><a href="/web_3/view/admin.php?section=danhmuc" class="nav-link <?= $section=='danhmuc'?'active':'' ?>">Danh mục</a></li>
   <li><a href="/web_3/view/admin.php?section=loaisanpham" class="nav-link <?= $section=='loaisanpham'?'active':'' ?>">Loại sản phẩm</a></li>
   <li><a href="/web_3/view/admin.php?section=sanpham" class="nav-link <?= $section=='sanpham'?'active':'' ?>">Sản phẩm</a></li>
   <li><a href="/web_3/view/admin.php?section=khuyenmai" class="nav-link <?= $section=='khuyenmai'?'active':'' ?>">Khuyến mãi</a></li>
-  <li><a href="/web_3/view/admin.php?section=voucher" class="nav-link <?= $section=='voucher'?'active':'' ?>">Voucher</a></li>
+  <li><a href="/web_3/view/admin.php?section=phieugiamgia" class="nav-link <?= $section=='phieugiamgia'?'active':'' ?>">Phiếu giảm giá</a></li>
   <li><a href="/web_3/view/admin.php?section=thethanhvien" class="nav-link <?= $section=='thethanhvien'?'active':'' ?>">Thẻ thành viên</a></li>
   <li><a href="/web_3/view/admin.php?section=chitiethoadon" class="nav-link <?= $section=='chitiethoadon'?'active':'' ?>">Hóa Đơn</a></li>
   <li><a href="/web_3/view/admin.php?section=donhang" class="nav-link <?= $section=='donhang'?'active':'' ?>">Đơn hàng</a></li>
+  <li><a href="/web_3/view/admin.php?section=giaohang" class="nav-link <?= $section=='giaohang'?'active':'' ?>">Giao hàng</a></li>
   <li><a href="/web_3/view/admin.php?section=doanhthu" class="nav-link <?= $section=='doanhthu'?'active':'' ?>">Doanh thu</a></li>
     <li><a href="/web_3/view/admin.php?section=taikhoan" class="nav-link <?= $section=='taikhoan'?'active':'' ?>">Tài khoản</a></li>
 

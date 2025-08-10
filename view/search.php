@@ -109,7 +109,7 @@ $keyword = trim($_GET['keyword'] ?? '');
     if ($keyword) {
         $db = new Database();
 $conn = $db->getConnection();
-        $stmt = $conn->prepare("SELECT * FROM sanpham WHERE TENSP LIKE ?");
+        $stmt = $conn->prepare("SELECT * FROM sanpham WHERE TENSP LIKE ? AND IS_DELETED = 0");
         $stmt->execute(['%' . $keyword . '%']);
         $results = $stmt->fetchAll(PDO::FETCH_ASSOC);
         if ($results) {

@@ -85,7 +85,8 @@ $voucherStmt->execute();
 $userVouchers = $voucherStmt->fetchAll(PDO::FETCH_ASSOC);
 
 // Tính membership level dựa trên tổng chi tiêu
-$totalSpent = array_sum(array_column($orders, 'TONGTIEN'));
+$validOrders = array_filter($orders, fn($o) => !in_array($o['TRANGTHAI'], ['Đã hủy', 'Yêu cầu hoàn hàng']));
+$totalSpent = array_sum(array_column($validOrders, 'TONGTIEN'));
 
 function getMembershipLevel($totalSpent) {
     if ($totalSpent >= 20000000) {
@@ -561,7 +562,7 @@ $currentTab = $_GET['tab'] ?? 'profile';
                             <div class="stat-label">Đang xử lý</div>
                         </div>
                         <div class="stat-card">
-                            <div class="stat-number"><?php echo number_format(array_sum(array_column($orders, 'TONGTIEN'))); ?>đ</div>
+                            <div class="stat-number"><?php echo number_format($totalSpent); ?>đ</div>
                             <div class="stat-label">Tổng chi tiêu</div>
                         </div>
                     </div>

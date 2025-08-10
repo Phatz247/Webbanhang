@@ -11,7 +11,8 @@ ini_set('display_errors', 1);
 $recent = isset($_GET['recent']) && $_GET['recent'] == '1';
 if ($recent) {
     $stmt = $conn->prepare("
-        SELECT hd.*, kh.TENKH, kh.SDT, kh.EMAIL
+        SELECT hd.*, kh.TENKH, kh.SDT, kh.EMAIL, kh.DIACHI,
+               COALESCE((SELECT SUM(ct.SOLUONG) FROM chitiethoadon ct WHERE ct.MAHD = hd.MAHD), 0) as TONG_SOLUONG
         FROM hoadon hd
         LEFT JOIN khachhang kh ON hd.MAKH = kh.MAKH
         ORDER BY hd.NGAYLAP DESC
@@ -19,7 +20,8 @@ if ($recent) {
     ");
 } else {
     $stmt = $conn->prepare("
-        SELECT hd.*, kh.TENKH, kh.SDT, kh.EMAIL
+        SELECT hd.*, kh.TENKH, kh.SDT, kh.EMAIL, kh.DIACHI,
+               COALESCE((SELECT SUM(ct.SOLUONG) FROM chitiethoadon ct WHERE ct.MAHD = hd.MAHD), 0) as TONG_SOLUONG
         FROM hoadon hd
         LEFT JOIN khachhang kh ON hd.MAKH = kh.MAKH
         ORDER BY hd.NGAYLAP DESC
@@ -27,7 +29,6 @@ if ($recent) {
 }
 $stmt->execute();
 $ds_hoadon = $stmt->fetchAll(PDO::FETCH_ASSOC);
-include_once __DIR__ . '/../view/upload/header_admin.php';
 ?>
 <!DOCTYPE html>
 <html lang="vi">
@@ -83,7 +84,7 @@ include_once __DIR__ . '/../view/upload/header_admin.php';
       justify-content: flex-end;
       flex-wrap: wrap;
     }
-    .filter-bar .btn {
+.filter-bar .btn {
       font-size: 16px;
       padding: 10px 24px;
       border-radius: 8px;
@@ -111,10 +112,10 @@ transition: background 0.2s;
         <i class="fas fa-file-invoice"></i> Danh sách hóa đơn
       </h3>
       <div class="filter-bar">
-        <a href="/web_3/controller/invoice_management.php" class="btn btn-outline-primary <?= !$recent ? 'active' : '' ?>">
+        <a href="/web_3/view/admin.php?section=chitiethoadon" class="btn btn-outline-primary <?= !$recent ? 'active' : '' ?>">
   <i class="fa-solid fa-list"></i> Hiển thị tất cả
 </a>
-<a href="/web_3/controller/invoice_management.php?recent=1" class="btn btn-outline-primary <?= $recent ? 'active' : '' ?>">
+<a href="/web_3/view/admin.php?section=chitiethoadon&recent=1" class="btn btn-outline-primary <?= $recent ? 'active' : '' ?>">
   <i class="fa-solid fa-clock"></i> Hóa đơn gần đây
 </a>
       </div>
@@ -126,7 +127,9 @@ transition: background 0.2s;
             <th>Mã hóa đơn</th>
             <th>Khách hàng</th>
             <th>SĐT</th>
+            <th>Email</th>
             <th>Ngày lập</th>
+            <th>Số lượng</th>
             <th>Trạng thái</th>
             <th>Tổng tiền</th>
             <th style="width:180px">Thao tác</th>
@@ -142,12 +145,23 @@ transition: background 0.2s;
             else $cls = 'status-delivered';
           ?>
           <tr>
-            <td><?= htmlspecialchars($hd['MAHD']) ?></td>
-            <td><?= htmlspecialchars($hd['TENKH']) ?></td>
-            <td><?= htmlspecialchars($hd['SDT']) ?></td>
-            <td><?= date('d/m/Y H:i', strtotime($hd['NGAYLAP'])) ?></td>
+            <td><strong><?= htmlspecialchars($hd['MAHD']) ?></strong></td>
+            <td><?= htmlspecialchars($hd['TENKH'] ?? 'Khách vãng lai') ?></td>
+            <td><?= htmlspecialchars($hd['SDT'] ?? 'N/A') ?></td>
+            <td><?= htmlspecialchars($hd['EMAIL'] ?? 'N/A') ?></td>
+            <td>
+              <div><?= date('d/m/Y', strtotime($hd['NGAYLAP'])) ?></div>
+              <small class="text-muted"><?= date('H:i:s', strtotime($hd['NGAYLAP'])) ?></small>
+            </td>
+            <td>
+              <?= $hd['TONG_SOLUONG'] > 0 ? $hd['TONG_SOLUONG'] : '0' ?>
+            </td>
             <td><span class="status-label <?= $cls ?>"><?= htmlspecialchars($st) ?></span></td>
-            <td style="color:#c0392b; font-weight:600;"><?= number_format($hd['TONGTIEN']) ?>đ</td>
+            <td>
+              <div style="color:#c0392b; font-weight:600; font-size:16px;">
+<?= number_format($hd['TONGTIEN']) ?>đ
+              </div>
+            </td>
             <td>
               <div class="action-buttons">
                 <a href="/web_3/controller/invoice_detail.php?id=<?= urlencode($hd['MAHD']) ?>"
@@ -160,16 +174,40 @@ transition: background 0.2s;
           </tr>
           <?php endforeach; ?>
           <?php if(empty($ds_hoadon)): ?>
-          <tr><td colspan="7" class="text-center text-muted">Chưa có hóa đơn nào.</td></tr>
+          <tr><td colspan="9" class="text-center text-muted">Chưa có hóa đơn nào.</td></tr>
           <?php endif; ?>
 </tbody>
       </table>
     </div>
-    <?php if($recent): ?>
-      <div class="mt-3 text-end text-secondary" style="font-size:15px;">
-        <i class="fa-solid fa-clock"></i> Hiển thị 10 hóa đơn gần đây nhất
+    
+    <!-- Thông tin tổng hợp -->
+    <div class="row mt-4">
+      <div class="col-md-8">
+        <?php if($recent): ?>
+          <div class="text-secondary" style="font-size:15px;">
+            <i class="fa-solid fa-clock"></i> Hiển thị 10 hóa đơn gần đây nhất
+          </div>
+        <?php else: ?>
+          <div class="text-secondary" style="font-size:15px;">
+            <i class="fa-solid fa-list"></i> Hiển thị tất cả hóa đơn (<?= count($ds_hoadon) ?> hóa đơn)
+          </div>
+        <?php endif; ?>
       </div>
-    <?php endif; ?>
+      <div class="col-md-4 text-end">
+        <?php 
+          $tong_doanhthu = 0;
+          $tong_soluong = 0;
+          foreach($ds_hoadon as $hd) {
+            $tong_doanhthu += floatval($hd['TONGTIEN']);
+            $tong_soluong += intval($hd['TONG_SOLUONG']);
+          }
+        ?>
+        <div class="text-muted small">
+          <div><strong>Tổng doanh thu:</strong> <span class="text-success"><?= number_format($tong_doanhthu) ?>đ</span></div>
+          <div><strong>Tổng số lượng:</strong> <?= $tong_soluong ?> sản phẩm</div>
+        </div>
+      </div>
+    </div>
   </div>
 </div>
 </body>
